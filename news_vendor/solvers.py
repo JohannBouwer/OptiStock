@@ -1,5 +1,6 @@
 
-from demand_distribution import DemandDistribution
+from .demand_distribution import DemandDistribution
+from .items import Item
 from abc import ABC, abstractmethod
 import math
 class Solver(ABC):
