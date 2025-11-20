@@ -25,6 +25,14 @@ class DemandDistribution(ABC):
             float: The demand quantile.
         """
         pass
+    
+    @abstractmethod
+    def get_cdf(self, quantity: float) -> float:
+        """
+        Cumulative Distribution Function. Returns P(Demand <= quantity).
+        Required for marginal analysis in constrained optimization.
+        """
+        pass
 
 class NormalDemand(DemandDistribution):
     """
@@ -62,21 +70,32 @@ class NormalDemand(DemandDistribution):
         
         return norm.ppf(clamped_prob, loc=self.mean, scale=self.std_dev)
     
+    def get_cdf(self, quantity: float) -> float:
+        if self.std_dev == 0:
+            return 1.0 if quantity >= self.mean else 0.0
+        return norm.cdf(quantity, loc=self.mean, scale=self.std_dev)
+    
 class SampledDemand(DemandDistribution):
     """
     Represents a sampled distribution. Most likly a postrior from a bayes model.
     """
     def __init__(self, samples: Union[np.ndarray, list, xr.DataArray]):
-        # Handle xarray.DataArray specifically to extract underlying numpy/dask array
         if hasattr(samples, 'values'):
             samples = samples.values
             
-        # Convert to numpy array and flatten in shape: (chains, draws). 
-        # We need a single 1D array of all samples.
-        self.samples = np.asarray(samples).flatten()
+        # Flatten and SORT samples immediately. 
+        # Sorting allows O(log N) CDF lookups via binary search.
+        self.samples = np.sort(np.asarray(samples).flatten())
         
         if self.samples.size == 0:
             raise ValueError("Sample array cannot be empty.")
 
     def get_quantile(self, probability: float) -> float:
-        return np.quantile(self.samples, probability, method='linear') # interpolate in between to samples
+        # Uses linear interpolation for values between samples
+        return np.quantile(self.samples, probability, method='linear')
+
+    def get_cdf(self, quantity: float) -> float:
+        # Uses binary search on sorted samples for speed
+        # side='right' ensures P(X <= x) logic
+        count = np.searchsorted(self.samples, quantity, side='right')
+        return count / self.samples.size
