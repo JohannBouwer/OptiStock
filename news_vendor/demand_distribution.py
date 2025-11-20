@@ -1,5 +1,7 @@
-import math
+import numpy as np
+import xarray as xr
 from abc import ABC, abstractmethod
+from typing import Union
 from scipy.stats import norm
 
 class DemandDistribution(ABC):
@@ -59,3 +61,22 @@ class NormalDemand(DemandDistribution):
         clamped_prob = max(epsilon, min(1.0 - epsilon, probability))
         
         return norm.ppf(clamped_prob, loc=self.mean, scale=self.std_dev)
+    
+class SampledDemand(DemandDistribution):
+    """
+    Represents a sampled distribution. Most likly a postrior from a bayes model.
+    """
+    def __init__(self, samples: Union[np.ndarray, list, xr.DataArray]):
+        # Handle xarray.DataArray specifically to extract underlying numpy/dask array
+        if hasattr(samples, 'values'):
+            samples = samples.values
+            
+        # Convert to numpy array and flatten in shape: (chains, draws). 
+        # We need a single 1D array of all samples.
+        self.samples = np.asarray(samples).flatten()
+        
+        if self.samples.size == 0:
+            raise ValueError("Sample array cannot be empty.")
+
+    def get_quantile(self, probability: float) -> float:
+        return np.quantile(self.samples, probability, method='linear') # interpolate in between to samples
