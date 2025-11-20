@@ -2,7 +2,7 @@ class Item:
     """
     Represents a single item, encapsulating its cost structure.
     """
-    def __init__(self, cost_price: float, selling_price: float, salvage_value: float = 0.0):
+    def __init__(self, name: str,  cost_price: float, selling_price: float, salvage_value: float = 0.0):
         """
         Initializes the Item.
 
@@ -14,7 +14,8 @@ class Item:
         """
         if not (selling_price > cost_price > salvage_value >= 0):
             raise ValueError("Prices must follow: selling_price > cost_price > salvage_value >= 0")
-            
+        
+        self.name = name
         self.cost_price = cost_price
         self.selling_price = selling_price
         self.salvage_value = salvage_value
