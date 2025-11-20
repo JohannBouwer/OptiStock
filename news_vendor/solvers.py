@@ -56,7 +56,8 @@ class SingleItemNewsvendorSolver(Solver):
         optimal_q_int = math.ceil(optimal_q_float)
         
         # Ensure quantity is non-negative
-        return max(0, optimal_q_int)
+        self.quantity = max(0, optimal_q_int)
+        return self.quantity
     
 class MultiItemConstrainedSolver:
     """
@@ -124,5 +125,6 @@ class MultiItemConstrainedSolver:
                 current_spend += self.problems[best_item_idx][0].cost_price
             else:
                 break
-                
-        return {prob[0].name: q for prob, q in zip(self.problems, current_quantities)}
+        
+        self.allocation = {prob[0].name: q for prob, q in zip(self.problems, current_quantities)}       
+        return self.allocation
