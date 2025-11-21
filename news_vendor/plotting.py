@@ -249,28 +249,35 @@ class NewsvendorVisualizer:
             )
 
         # Lagrangian Multipliers (Top Right)
-        ax_shadow = fig.add_subplot(gs[0, 1])
+        ax_lambdas = fig.add_subplot(gs[0, 1])
         if lambdas:
             names = list(lambdas.keys())
             values = list(lambdas.values())
-            # Color code: High shadow price = Bottleneck (Red), Low = Non-binding (Green)
+            # Color code: High lambdas price = Bottleneck (Red), Low = Non-binding (Green)
             colors = ["#e74c3c" if v > 0.1 else "#2ecc71" for v in values]
 
             sns.barplot(
-                x=values, y=names, ax=ax_shadow, palette=colors, hue=names, legend=False
+                x=values,
+                y=names,
+                ax=ax_lambdas,
+                palette=colors,
+                hue=names,
+                legend=False,
             )
-            ax_shadow.set_title("Shadow Prices (Marginal Value of Relaxing Constraint)")
-            ax_shadow.set_xlabel("Additional Profit per unit of Constraint")
+            ax_lambdas.set_title(
+                "lambdas Prices (Marginal Value of Relaxing Constraint)"
+            )
+            ax_lambdas.set_xlabel("Additional Profit per unit of Constraint")
         else:
-            ax_shadow.text(
+            ax_lambdas.text(
                 0.5,
                 0.5,
-                "No Shadow Prices Available\n(Use Lagrangian or Scipy Solver)",
+                "No lambdas Prices Available\n(Use Lagrangian or Scipy Solver)",
                 ha="center",
                 va="center",
                 color="gray",
             )
-            ax_shadow.axis("off")
+            ax_lambdas.axis("off")
 
         # Per-Item Profit Contribution (Bottom)
         ax_item = fig.add_subplot(gs[1, :])
