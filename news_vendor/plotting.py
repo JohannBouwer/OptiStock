@@ -146,10 +146,10 @@ class NewsvendorVisualizer:
             ax.bar(
                 ["Used", "Free"],
                 [used, remaining],
-                color=[color, "#ecf0f1"],
+                color=[color, "#ececf1"],
                 edgecolor="gray",
             )
-            ax.set_title(f"{limit_name.capitalize()}: {pct_used:.1f}%")
+            ax.set_title(f"{limit_name.capitalize()}: {pct_used:.1f}% @ ")
 
             # Add text label inside bar
             ax.text(
@@ -196,6 +196,117 @@ class NewsvendorVisualizer:
 
         plt.tight_layout()
         plt.show()
+
+    def plot_optimization_summary(
+        self,
+        allocation: Dict[str, int],
+        inventory_problems: List[Tuple[Item, DemandDistribution]],
+        lambdas: Dict[str, float] = None,
+    ):
+        fig = plt.figure(figsize=(14, 8))
+        gs = gridspec.GridSpec(2, 2, height_ratios=[1, 1.5])
+
+        # Profit Analysis (Top Left)
+        ax_total = fig.add_subplot(gs[0, 0])
+
+        # Calculate Realized vs Unconstrained Profit
+        realized_profits = {}
+        unconstrained_profits = {}
+
+        for item, demand in inventory_problems:
+            q_actual = allocation.get(item.name, 0)
+            realized_profits[item.name] = self._calculate_expected_profit(
+                item, demand, q_actual
+            )
+
+            # Calculate unconstrained optimal Q* for comparison
+            # CF = (p-c)/(p-s)
+            fractile = item.critical_fractile
+            q_opt = max(0, np.ceil(demand.get_quantile(fractile)))
+            unconstrained_profits[item.name] = self._calculate_expected_profit(
+                item, demand, q_opt
+            )
+
+        total_realized = sum(realized_profits.values())
+        total_potential = sum(unconstrained_profits.values())
+        constraint_cost = total_potential - total_realized
+
+        # Waterfall-style breakdown
+        ax_total.bar(
+            ["Potential", "Realized"],
+            [total_potential, total_realized],
+            color=["#95a5a6", "#2ecc71"],
+            edgecolor="black",
+            alpha=0.7,
+        )
+        ax_total.set_title(f"Impact of Constraints\nCost: {constraint_cost:,.2f}")
+        ax_total.set_ylabel("Expected Profit")
+
+        # Add value labels
+        for i, v in enumerate([total_potential, total_realized]):
+            ax_total.text(
+                i, v, f"{v:,.0f}", ha="center", va="bottom", fontweight="bold"
+            )
+
+        # Lagrangian Multipliers (Top Right)
+        ax_shadow = fig.add_subplot(gs[0, 1])
+        if lambdas:
+            names = list(lambdas.keys())
+            values = list(lambdas.values())
+            # Color code: High shadow price = Bottleneck (Red), Low = Non-binding (Green)
+            colors = ["#e74c3c" if v > 0.1 else "#2ecc71" for v in values]
+
+            sns.barplot(
+                x=values, y=names, ax=ax_shadow, palette=colors, hue=names, legend=False
+            )
+            ax_shadow.set_title("Shadow Prices (Marginal Value of Relaxing Constraint)")
+            ax_shadow.set_xlabel("Additional Profit per unit of Constraint")
+        else:
+            ax_shadow.text(
+                0.5,
+                0.5,
+                "No Shadow Prices Available\n(Use Lagrangian or Scipy Solver)",
+                ha="center",
+                va="center",
+                color="gray",
+            )
+            ax_shadow.axis("off")
+
+        # Per-Item Profit Contribution (Bottom)
+        ax_item = fig.add_subplot(gs[1, :])
+
+        items = list(realized_profits.keys())
+        # Sort by contribution
+        items.sort(key=lambda x: realized_profits[x], reverse=True)
+        vals = [realized_profits[k] for k in items]
+
+        sns.barplot(
+            x=items, y=vals, ax=ax_item, palette="Blues_d", hue=items, legend=False
+        )
+        ax_item.set_title("Profit Contribution per Item")
+        ax_item.set_ylabel("Expected Profit")
+
+        plt.tight_layout()
+        plt.show()
+
+    def _calculate_expected_profit(self, item, demand, q):
+        # Helper to calculate profit for a specific Q
+        # Uses simulation approximation for robustness
+        n_sims = 2000
+        if hasattr(demand, "samples"):
+            sim_demand = np.random.choice(demand.samples, n_sims)
+        else:
+            sim_demand = np.random.normal(demand.mean, demand.std_dev, n_sims)
+            sim_demand = np.maximum(0, sim_demand)
+
+        sold = np.minimum(q, sim_demand)
+        unsold = np.maximum(0, q - sim_demand)
+
+        rev = sold * item.selling_price
+        salvage = unsold * item.salvage_value
+        cost = q * item.cost_price
+
+        return np.mean(rev + salvage - cost)
 
     def _plot_demand_distribution(self, ax, item, demand, q_star):
         # Generate range for plotting x-axis (approx +/- 4 std devs or full sample range)
