@@ -2,6 +2,7 @@ from .demand_distribution import DemandDistribution
 from .items import Item
 from abc import ABC, abstractmethod
 import math
+from collections import defaultdict
 
 
 class Solver(ABC):
@@ -10,7 +11,7 @@ class Solver(ABC):
     """
 
     @abstractmethod
-    def solve(self) -> int:
+    def solve(self) -> int | dict:
         """
         Executes the solver's logic to find the optimal solution.
         """
@@ -20,6 +21,8 @@ class Solver(ABC):
 class SingleItemNewsvendorSolver(Solver):
     """
     Solves the classic (single-item) Newsvendor problem.
+
+    Use Case: One item problem with no contraints
     """
 
     def __init__(self, item: Item, demand_distribution: DemandDistribution):
@@ -63,9 +66,11 @@ class SingleItemNewsvendorSolver(Solver):
         return self.quantity
 
 
-class MultiItemConstrainedSolver:
+class MultiItemConstrainedSolver(Solver):
     """
     Solves the case for multiple items with a budget contraint using a "greedy" approach
+
+    Use Case: Multiple Items with one budget contraint. Best for small order quatities for few number of items.
 
     - It calculates the Expected Marginal Profit of buying one more unit for every item.
 
@@ -139,3 +144,133 @@ class MultiItemConstrainedSolver:
             prob[0].name: q for prob, q in zip(self.problems, current_quantities)
         }
         return self.allocation
+
+
+class LagrangianConstraintSolver(Solver):
+    """
+    This solver finds the Lagrange multiplier, $\lambda$, for each constraint as well as the optimum order quantities.
+
+    Use Case: Use the Lagrangian solver if you are dealing with low-volume items with multiple constraints ( < 10).
+
+    Initialization: Starts with all shadow prices at 0.
+
+    Sub-problem: It solves the single-item Newsvendor problem for every item,
+    but treats the Effective Cost as:
+    $$Cost_{effective} = Cost_{real} + \sum (\lambda_k \times \text{ConstraintUsage}_k)$$
+
+    Update:If we use too much of a resource (e.g., over budget), we increase $\lambda$ for that resource. This makes items using that resource "expensive,"
+    reducing their order quantity in the next iteration.If we use too little, we decrease $\lambda$.
+
+    Iteration: This repeats until the shadow prices stabilize or we hit a limit.
+    """
+
+    def __init__(
+        self,
+        problems: list[tuple[Item, DemandDistribution]],
+        limits: dict[str, float],
+        max_iter: int = 200,
+        learning_rate: float = 2.0,
+    ):
+        self.problems = problems
+        self.limits = limits
+        self.max_iter = max_iter
+        self.initial_learning_rate = learning_rate
+
+    def solve(self) -> dict[str, int]:
+        # Initialize multipliers (lambdas) to 0 for each constraint
+        lambdas = {k: 0.0 for k in self.limits.keys()}
+
+        best_feasible_q = {}
+        best_feasible_profit = -float("inf")
+
+        # Subgradient Optimization Loop
+        for k in range(self.max_iter):
+            # Solve relaxed problem with current shadow prices
+            current_q, current_usage = self._solve_relaxed_problem(lambdas)
+
+            # Check feasibility and update best solution
+            is_feasible = all(
+                current_usage[res] <= limit for res, limit in self.limits.items()
+            )
+            if is_feasible:
+                profit = self._calculate_total_expected_profit(current_q)
+                if profit > best_feasible_profit:
+                    best_feasible_profit = profit
+                    best_feasible_q = current_q.copy()
+
+            # Calculate gradients (Usage - Limit)
+            gradients = {
+                res: current_usage[res] - limit for res, limit in self.limits.items()
+            }
+
+            # Check for convergence (all constraints satisfied or close enough)
+            # Note: In discrete problems, gradients might not hit 0 exactly.
+            if all(g <= 0 for g in gradients.values()) and sum(lambdas.values()) == 0:
+                break
+
+            # Update multipliers (Subgradient Descent)
+            # Step size decays over time (Polyak-like heuristic)
+            step_size = self.initial_learning_rate / (math.sqrt(k + 1))
+
+            for res in lambdas:
+                # lambda = max(0, lambda + step * gradient)
+                lambdas[res] = max(0.0, lambdas[res] + step_size * gradients[res])
+
+        if not best_feasible_q:
+            print(
+                "Warning: No feasible solution found. Returning last iteration (likely infeasible)."
+            )
+
+            self.allocation = current_q
+            return self.allocation
+        self.allocation = best_feasible_q
+        return best_feasible_q
+
+    def _solve_relaxed_problem(
+        self, lambdas: dict[str, float]
+    ) -> tuple[dict[str, int], dict[str, float]]:
+        quantities = {}
+        usage = defaultdict(float)
+
+        for item, demand in self.problems:
+            # Calculate total shadow cost for this item
+            shadow_cost = sum(
+                lambdas.get(res, 0) * item.constraints.get(res, 0) for res in lambdas
+            )
+
+            effective_cost = item.cost_price + shadow_cost
+
+            # If effective cost exceeds selling price, order 0 (not profitable)
+            if effective_cost >= item.selling_price:
+                q = 0
+            else:
+                # New Critical Fractile with effective cost
+                # CF = (Price - Eff_Cost) / (Price - Salvage)
+                # Note: Denominator (Price - Salvage) is unchanged by shadow costs in standard derivation
+                numerator = item.selling_price - effective_cost
+                denominator = item.selling_price - item.salvage_value
+                fractile = numerator / denominator
+
+                q = max(0, math.ceil(demand.get_quantile(fractile)))
+
+            quantities[item.name] = q
+
+            # Tally usage
+            for res, val in item.constraints.items():
+                if res in self.limits:
+                    usage[res] += q * val
+
+        return quantities, usage
+
+    def _calculate_total_expected_profit(self, quantities: dict[str, int]) -> float:
+        total_profit = 0.0
+        # Simple expected profit calculation for verification
+        for item, demand in self.problems:
+            q = quantities.get(item.name, 0)
+            if q == 0:
+                continue
+
+            total_profit += q * (
+                item.selling_price - item.cost_price
+            )  # Simplified proxy
+        return total_profit
