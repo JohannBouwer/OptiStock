@@ -169,7 +169,7 @@ class LagrangianConstraintSolver(Solver):
         problems: list[tuple[Item, DemandDistribution]],
         limits: dict[str, float],
         max_iter: int = 200,
-        learning_rate: float = 2.0,
+        learning_rate: float = 0.1,
     ):
         self.problems = problems
         self.limits = limits
@@ -219,7 +219,9 @@ class LagrangianConstraintSolver(Solver):
 
             for res in lambdas:
                 # lambda = max(0, lambda + step * gradient)
-                lambdas[res] = max(0.0, lambdas[res] + step_size * gradients[res])
+                lambdas[res] = max(
+                    0.0, lambdas[res] + min(step_size, 1.0) * gradients[res]
+                )
 
         if not best_feasible_q:
             print(
