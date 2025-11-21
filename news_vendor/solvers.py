@@ -224,6 +224,7 @@ class LagrangianConstraintSolver(Solver):
             self.allocation = current_q
             return self.allocation
         self.allocation = best_feasible_q
+        self.lambdas = lambdas
         return best_feasible_q
 
     def _solve_relaxed_problem(
