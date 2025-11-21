@@ -2,23 +2,34 @@ class Item:
     """
     Represents a single item, encapsulating its cost structure.
     """
-    def __init__(self, name: str,  cost_price: float, selling_price: float, salvage_value: float = 0.0):
+
+    def __init__(
+        self,
+        name: str,
+        cost_price: float,
+        selling_price: float,
+        salvage_value: float = 0.0,
+        constraints: dict[str, float] = {},
+    ):
         """
         Initializes the Item.
 
         Args:
             cost_price (float): The cost to procure one unit of the item.
             selling_price (float): The price the item is sold at.
-            salvage_value (float): The value (e.g., discount price, scrap) 
+            salvage_value (float): The value (e.g., discount price, scrap)
                                      of an unsold item. Defaults to 0.0.
         """
         if not (selling_price > cost_price > salvage_value >= 0):
-            raise ValueError("Prices must follow: selling_price > cost_price > salvage_value >= 0")
-        
+            raise ValueError(
+                "Prices must follow: selling_price > cost_price > salvage_value >= 0"
+            )
+
         self.name = name
         self.cost_price = cost_price
         self.selling_price = selling_price
         self.salvage_value = salvage_value
+        self.constraints = constraints
 
     @property
     def underage_cost(self) -> float:
