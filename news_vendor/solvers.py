@@ -202,6 +202,9 @@ class LagrangianConstraintSolver(Solver):
             gradients = {
                 res: current_usage[res] - limit for res, limit in self.limits.items()
             }
+            gradients_scale = sum(
+                g**2 for g in gradients.values()
+            )  # normalize gradients
 
             # Check for convergence (all constraints satisfied or close enough)
             # Note: In discrete problems, gradients might not hit 0 exactly.
@@ -210,7 +213,9 @@ class LagrangianConstraintSolver(Solver):
 
             # Update multipliers (Subgradient Descent)
             # Step size decays over time (Polyak-like heuristic)
-            step_size = self.initial_learning_rate / (math.sqrt(k + 1))
+            step_size = self.initial_learning_rate / (
+                math.sqrt(k + 1) * math.sqrt(gradients_scale)
+            )
 
             for res in lambdas:
                 # lambda = max(0, lambda + step * gradient)
