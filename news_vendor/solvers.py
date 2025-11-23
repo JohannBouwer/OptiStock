@@ -2,6 +2,8 @@ from .demand_distribution import DemandDistribution
 from .items import Item
 from abc import ABC, abstractmethod
 import math
+import numpy as np
+from scipy.optimize import minimize, LinearConstraint
 from collections import defaultdict
 
 
@@ -146,139 +148,105 @@ class MultiItemConstrainedSolver(Solver):
         return self.allocation
 
 
-class LagrangianConstraintSolver(Solver):
-    """
-    This solver finds the Lagrange multiplier, $\lambda$, for each constraint as well as the optimum order quantities.
-
-    Use Case: Use the Lagrangian solver if you are dealing with low-volume items with multiple constraints ( < 10).
-
-    Initialization: Starts with all shadow prices at 0.
-
-    Sub-problem: It solves the single-item Newsvendor problem for every item,
-    but treats the Effective Cost as:
-    $$Cost_{effective} = Cost_{real} + \sum (\lambda_k \times \text{ConstraintUsage}_k)$$
-
-    Update:If we use too much of a resource (e.g., over budget), we increase $\lambda$ for that resource. This makes items using that resource "expensive,"
-    reducing their order quantity in the next iteration.If we use too little, we decrease $\lambda$.
-
-    Iteration: This repeats until the shadow prices stabilize or we hit a limit.
-    """
-
+class ScipyOptimizationSolver(Solver):
     def __init__(
         self,
         problems: list[tuple[Item, DemandDistribution]],
         limits: dict[str, float],
-        max_iter: int = 200,
-        learning_rate: float = 0.1,
     ):
         self.problems = problems
         self.limits = limits
-        self.max_iter = max_iter
-        self.initial_learning_rate = learning_rate
+        self.shadow_prices = {}
 
     def solve(self) -> dict[str, int]:
-        # Initialize multipliers (lambdas) to 0 for each constraint
-        lambdas = {k: 0.0 for k in self.limits.keys()}
+        n_items = len(self.problems)
+        constraint_names = list(self.limits.keys())
 
-        best_feasible_q = {}
-        best_feasible_profit = -float("inf")
+        # Build Constraint Matrix A (Rows=Constraints, Cols=Items)
+        A = np.zeros((len(constraint_names), n_items))
+        # upper bound of constraints
+        upper_bounds = np.array(list(self.limits.values()))
+        # lower bound of constraints
+        lower_bounds = np.array(
+            [-np.inf] * len(constraint_names)
+        )  # One-sided constraints <= limit
 
-        # Subgradient Optimization Loop
-        for k in range(self.max_iter):
-            # Solve relaxed problem with current shadow prices
-            current_q, current_usage = self._solve_relaxed_problem(lambdas)
+        # set up constraints
+        for row_idx, name in enumerate(constraint_names):
+            for col_idx, (item, _) in enumerate(self.problems):
+                val = item.constraints.get(name, 0.0)
+                A[row_idx, col_idx] = val
 
-            # Check feasibility and update best solution
-            is_feasible = all(
-                current_usage[res] <= limit for res, limit in self.limits.items()
-            )
-            if is_feasible:
-                profit = self._calculate_total_expected_profit(current_q)
-                if profit > best_feasible_profit:
-                    best_feasible_profit = profit
-                    best_feasible_q = current_q.copy()
+        linear_cons = LinearConstraint(A, lower_bounds, upper_bounds)
 
-            # Calculate gradients (Usage - Limit)
-            gradients = {
-                res: current_usage[res] - limit for res, limit in self.limits.items()
+        # Initial Guess & Bounds
+        x0 = np.array(
+            [
+                d.mean if hasattr(d, "mean") else np.mean(d.samples)
+                for _, d in self.problems
+            ]
+        )
+        bounds = [(0, np.inf) for _ in range(n_items)]
+
+        # 3. Solve
+        result = minimize(
+            fun=self._objective_function,
+            x0=x0,
+            method="trust-constr",
+            bounds=bounds,
+            constraints=[linear_cons],
+        )
+
+        # Extract Lambdas
+        if result.v:
+            self.lambdas = {
+                name: float(abs(m)) for name, m in zip(constraint_names, result.v[0])
             }
-            gradients_scale = sum(
-                g**2 for g in gradients.values()
-            )  # normalize gradients
 
-            # Check for convergence (all constraints satisfied or close enough)
-            # Note: In discrete problems, gradients might not hit 0 exactly.
-            if all(g <= 0 for g in gradients.values()) and sum(lambdas.values()) == 0:
-                break
+        final_quantities = np.floor(result.x).astype(int)
+        self.allocation = {
+            self.problems[i][0].name: q for i, q in enumerate(final_quantities)
+        }
+        return self.allocation
 
-            # Update multipliers (Subgradient Descent)
-            # Step size decays over time (Polyak-like heuristic)
-            step_size = self.initial_learning_rate / (
-                math.sqrt(k + 1) * math.sqrt(gradients_scale)
-            )
-
-            for res in lambdas:
-                # lambda = max(0, lambda + step * gradient)
-                lambdas[res] = max(
-                    0.0, lambdas[res] + min(step_size, 1.0) * gradients[res]
-                )
-
-        if not best_feasible_q:
-            print(
-                "Warning: No feasible solution found. Returning last iteration (likely infeasible)."
-            )
-
-            self.allocation = current_q
-            return self.allocation
-        self.allocation = best_feasible_q
-        self.lambdas = lambdas
-        return best_feasible_q
-
-    def _solve_relaxed_problem(
-        self, lambdas: dict[str, float]
-    ) -> tuple[dict[str, int], dict[str, float]]:
-        quantities = {}
-        usage = defaultdict(float)
-
-        for item, demand in self.problems:
-            # Calculate total shadow cost for this item
-            shadow_cost = sum(
-                lambdas.get(res, 0) * item.constraints.get(res, 0) for res in lambdas
-            )
-
-            effective_cost = item.cost_price + shadow_cost
-
-            # If effective cost exceeds selling price, order 0 (not profitable)
-            if effective_cost >= item.selling_price:
-                q = 0
-            else:
-                # New Critical Fractile with effective cost
-                # CF = (Price - Eff_Cost) / (Price - Salvage)
-                # Note: Denominator (Price - Salvage) is unchanged by shadow costs in standard derivation
-                numerator = item.selling_price - effective_cost
-                denominator = item.selling_price - item.salvage_value
-                fractile = numerator / denominator
-
-                q = max(0, math.ceil(demand.get_quantile(fractile)))
-
-            quantities[item.name] = q
-
-            # Tally usage
-            for res, val in item.constraints.items():
-                if res in self.limits:
-                    usage[res] += q * val
-
-        return quantities, usage
-
-    def _calculate_total_expected_profit(self, quantities: dict[str, int]) -> float:
+    def _objective_function(self, quantities):
         total_profit = 0.0
-        # Simple expected profit calculation for verification
-        for item, demand in self.problems:
-            q = quantities.get(item.name, 0)
-            if q == 0:
-                continue
+        for i, q in enumerate(quantities):
+            item, demand = self.problems[i]
 
-            total_profit += q * (
-                item.selling_price - item.cost_price
-            )  # Simplified proxy
-        return total_profit
+            # Smooth approximation for gradient descent
+            if hasattr(demand, "mean"):
+                mu, sigma = demand.mean, demand.std_dev
+            else:
+                mu = np.mean(demand.samples)
+                sigma = np.std(demand.samples)
+
+            # Analytical Normal Loss Function for smooth gradients
+            if sigma > 0:
+                # standard deviation q is from mean of demand
+                z = (q - mu) / sigma
+
+                # likelihood that demand will be Order Quantity.
+                pdf = (1 / np.sqrt(2 * np.pi)) * np.exp(-0.5 * z**2)
+
+                # probability that Demand is less than Order Quantity
+                cdf = 0.5 * (1 + math.erf(z / np.sqrt(2)))
+
+                # The expected amount of demand that will not be met (shortage normalised)
+                L_z = pdf - z * (1 - cdf)
+
+                exp_shortage = sigma * L_z  # expected shortage
+                exp_sales = mu - exp_shortage  # actual sales (demand - shortage)
+                exp_leftover = q - exp_sales  # actual sales (ordered - left over)
+            else:
+                exp_sales = min(q, mu)
+                exp_leftover = max(0, q - mu)
+
+            profit = (
+                (exp_sales * item.selling_price)
+                + (exp_leftover * item.salvage_value)
+                - (q * item.cost_price)
+            )
+            total_profit += profit
+
+        return -total_profit
