@@ -3,6 +3,8 @@ import xarray as xr
 from abc import ABC, abstractmethod
 from typing import Union
 from scipy.stats import norm
+from collections import Counter
+
 
 class DemandDistribution(ABC):
     """
@@ -10,7 +12,19 @@ class DemandDistribution(ABC):
     Requires subclasses to implement a method to find the
     quantile for a given probability.
     """
-    
+
+    @property
+    @abstractmethod
+    def mean(self) -> float:
+        """Subclasses must define a mean."""
+        pass
+
+    @property
+    @abstractmethod
+    def std(self) -> float:
+        """Subclasses must define a standard deviation."""
+        pass
+
     @abstractmethod
     def get_quantile(self, probability: float) -> float:
         """
@@ -25,7 +39,7 @@ class DemandDistribution(ABC):
             float: The demand quantile.
         """
         pass
-    
+
     @abstractmethod
     def get_cdf(self, quantity: float) -> float:
         """
@@ -34,10 +48,20 @@ class DemandDistribution(ABC):
         """
         pass
 
+    @abstractmethod
+    def get_pdf(self, quantity: float) -> float:
+        """
+        Probability Distribution Function. Returns P(Demand = quantity).
+        Required for marginal analysis in constrained optimization.
+        """
+        pass
+
+
 class NormalDemand(DemandDistribution):
     """
     Represents a normally distributed demand.
     """
+
     def __init__(self, mean: float, std_dev: float):
         """
         Initializes the normal demand distribution.
@@ -48,54 +72,81 @@ class NormalDemand(DemandDistribution):
         """
         if mean < 0 or std_dev < 0:
             raise ValueError("Mean and Standard Deviation must be non-negative.")
-        self.mean = mean
-        self.std_dev = std_dev
+        self._mean = mean
+        self._std_dev = std_dev
+
+    @property
+    def mean(self) -> float:
+        return self._mean
+
+    @property
+    def std(self) -> float:
+        return self._std_dev
 
     def get_quantile(self, probability: float) -> float:
         """
         Finds the demand quantile using the inverse CDF of the normal distribution.
-        
+
         Args:
             probability (float): The cumulative probability (0 to 1).
 
         Returns:
             float: The demand quantile. Returns 0 if std_dev is 0.
         """
-        if self.std_dev == 0:
+        if self._std_dev == 0:
             return self.mean
-        
+
         # Clamp probability to avoid issues with ppf at 0 or 1
         epsilon = 1e-9
         clamped_prob = max(epsilon, min(1.0 - epsilon, probability))
-        
-        return norm.ppf(clamped_prob, loc=self.mean, scale=self.std_dev)
-    
+
+        return norm.ppf(clamped_prob, loc=self.mean, scale=self.std)
+
     def get_cdf(self, quantity: float) -> float:
-        if self.std_dev == 0:
+        if self.std == 0:
             return 1.0 if quantity >= self.mean else 0.0
-        return norm.cdf(quantity, loc=self.mean, scale=self.std_dev)
-    
+        return norm.cdf(quantity, loc=self.mean, scale=self.std)
+
+    def get_pdf(self, quantity: float) -> float:
+        return norm.pdf(quantity)
+
+
 class SampledDemand(DemandDistribution):
     """
     Represents a sampled distribution. Most likly a postrior from a bayes model.
     """
+
     def __init__(self, samples: Union[np.ndarray, list, xr.DataArray]):
-        if hasattr(samples, 'values'):
+        if hasattr(samples, "values"):
             samples = samples.values
-            
-        # Flatten and SORT samples immediately. 
+
+        # Flatten and SORT samples immediately.
         # Sorting allows O(log N) CDF lookups via binary search.
         self.samples = np.sort(np.asarray(samples).flatten())
-        
+
         if self.samples.size == 0:
             raise ValueError("Sample array cannot be empty.")
 
+        counts = Counter(self.samples)
+        self._pdf_map = {k: v / len(self.samples) for k, v in counts.items()}
+
+    @property
+    def mean(self) -> float:
+        return np.mean(self.samples)
+
+    @property
+    def std(self) -> float:
+        return np.std(self.samples)
+
+    def get_pdf(self, quantity) -> float:
+        return self._pdf_map.get(quantity, 0.0)
+
     def get_quantile(self, probability: float) -> float:
         # Uses linear interpolation for values between samples
-        return np.quantile(self.samples, probability, method='linear')
+        return np.quantile(self.samples, probability, method="linear")
 
     def get_cdf(self, quantity: float) -> float:
         # Uses binary search on sorted samples for speed
         # side='right' ensures P(X <= x) logic
-        count = np.searchsorted(self.samples, quantity, side='right')
+        count = np.searchsorted(self.samples, quantity, side="right")
         return count / self.samples.size
