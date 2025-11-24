@@ -303,7 +303,7 @@ class NewsvendorVisualizer:
         if hasattr(demand, "samples"):
             sim_demand = np.random.choice(demand.samples, n_sims)
         else:
-            sim_demand = np.random.normal(demand.mean, demand.std_dev, n_sims)
+            sim_demand = np.random.normal(demand.mean, demand.std, n_sims)
             sim_demand = np.maximum(0, sim_demand)
 
         sold = np.minimum(q, sim_demand)
@@ -327,13 +327,13 @@ class NewsvendorVisualizer:
             )
         else:
             # For Normal, use mean +/- 4 std
-            x_min = max(0, demand.mean - 4 * demand.std_dev)
-            x_max = demand.mean + 4 * demand.std_dev
+            x_min = max(0, demand.mean - 4 * demand.std)
+            x_max = demand.mean + 4 * demand.std
             x_range = np.linspace(x_min, x_max, 200)
             # Plot PDF
             from scipy.stats import norm
 
-            y_vals = norm.pdf(x_range, demand.mean, demand.std_dev)
+            y_vals = norm.pdf(x_range, demand.mean, demand.std)
             ax.plot(x_range, y_vals, color="blue", lw=2)
             ax.fill_between(x_range, y_vals, alpha=0.2, color="blue")
 
@@ -357,7 +357,7 @@ class NewsvendorVisualizer:
         # If constrained q_star is low, we still want to see the potential peak (near mean)
         if hasattr(demand, "mean"):
             central_val = demand.mean
-            spread = demand.std_dev * 3
+            spread = demand.std * 3
         else:
             central_val = np.mean(demand.samples)
             spread = (np.max(demand.samples) - np.min(demand.samples)) / 2
@@ -375,7 +375,7 @@ class NewsvendorVisualizer:
         if hasattr(demand, "samples"):
             sim_demand = np.random.choice(demand.samples, n_sims)
         else:
-            sim_demand = np.random.normal(demand.mean, demand.std_dev, n_sims)
+            sim_demand = np.random.normal(demand.mean, demand.std, n_sims)
             sim_demand = np.maximum(0, sim_demand)
 
         for q in q_range:
