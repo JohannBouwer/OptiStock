@@ -216,7 +216,7 @@ class ScipyOptimizationSolver(Solver):
 
             # Smooth approximation for gradient descent
             if hasattr(demand, "mean"):
-                mu, sigma = demand.mean, demand.std_dev
+                mu, sigma = demand.mean, demand.std
             else:
                 mu = np.mean(demand.samples)
                 sigma = np.std(demand.samples)
@@ -227,17 +227,17 @@ class ScipyOptimizationSolver(Solver):
                 z = (q - mu) / sigma
 
                 # likelihood that demand will be Order Quantity.
-                pdf = (1 / np.sqrt(2 * np.pi)) * np.exp(-0.5 * z**2)
+                pdf = demand.get_pdf(q)
 
                 # probability that Demand is less than Order Quantity
-                cdf = 0.5 * (1 + math.erf(z / np.sqrt(2)))
+                cdf = demand.get_cdf(q)
 
                 # The expected amount of demand that will not be met (shortage normalised)
                 L_z = pdf - z * (1 - cdf)
 
                 exp_shortage = sigma * L_z  # expected shortage
                 exp_sales = mu - exp_shortage  # actual sales (demand - shortage)
-                exp_leftover = q - exp_sales  # actual sales (ordered - left over)
+                exp_leftover = q - exp_sales  # actual left over (ordered - left over)
             else:
                 exp_sales = min(q, mu)
                 exp_leftover = max(0, q - mu)
