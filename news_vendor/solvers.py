@@ -4,7 +4,6 @@ from abc import ABC, abstractmethod
 import math
 import numpy as np
 from scipy.optimize import minimize, LinearConstraint
-from collections import defaultdict
 
 
 class Solver(ABC):
@@ -124,7 +123,7 @@ class MultiItemConstrainedSolver(Solver):
                     to_remove.add(i)
                     continue
 
-                # Bang for buck: Marginal Profit per unit invested
+                #  Marginal Profit per unit invested
                 metric = mep / item.cost_price
 
                 # Find the item with the best mep
@@ -132,7 +131,7 @@ class MultiItemConstrainedSolver(Solver):
                     best_metric = metric
                     best_item_idx = i
 
-            # remove items that are no longer porfitible
+            # remove items that are no longer profitable
             active_indices -= to_remove
 
             # update item and current spend
@@ -180,12 +179,7 @@ class ScipyOptimizationSolver(Solver):
         linear_cons = LinearConstraint(A, lower_bounds, upper_bounds)
 
         # Initial Guess & Bounds
-        x0 = np.array(
-            [
-                d.mean if hasattr(d, "mean") else np.mean(d.samples)
-                for _, d in self.problems
-            ]
-        )
+        x0 = np.array([d.mean for _, d in self.problems])
         bounds = [(0, np.inf) for _ in range(n_items)]
 
         # 3. Solve
@@ -250,3 +244,132 @@ class ScipyOptimizationSolver(Solver):
             total_profit += profit
 
         return -total_profit
+
+
+class StochasticMonteCarloSolver(Solver):
+    """
+    Stochastic solver that takes into account the full yield and demand distributions.
+
+    It asses risk using the CVaR (Conditional Value at Risk) by punishing profit with the distance to the cvar value.
+    This value is punished using a risk_aversion metric (0 - 1), with 1 being extremely risk averse, and 0 not at all.
+
+    obj = (1 - self.risk_aversion) * mean_profit + self.risk_aversion * cvar_val
+
+    Default is 0 risk aversion at the 5% percentile.
+    """
+
+    def __init__(
+        self,
+        problems: list[tuple[Item, DemandDistribution]],
+        limits: dict[str, float],
+        n_samples: int = 10000,
+    ):
+        self.problems = problems
+        self.limits = limits
+        self.n_samples = n_samples
+        self.lambdas = {}
+
+        # Pre-generate samples for Common Random Numbers (CRN)
+        self._demand_samples_matrix = []
+        self._yield_samples_matrix = []
+
+        for item, demand_dist in self.problems:
+            # 1. Prepare Demand Samples
+            if hasattr(demand_dist, "samples"):
+                # Resample or tile to match n_samples if needed
+                d_samp = np.random.choice(demand_dist.samples, n_samples)
+            else:
+                # Generate from analytical distribution (Normal)
+                d_samp = np.random.normal(demand_dist.mean, demand_dist.std, n_samples)
+                d_samp = np.maximum(0, d_samp)  # Clamp negative demand
+            self._demand_samples_matrix.append(d_samp)
+
+            # 2. Prepare Yield Samples
+            # Item.yield_distribution is now populated (defaults to PerfectYield)
+            y_samp = item.yield_distribution.sample(n_samples)
+            self._yield_samples_matrix.append(y_samp)
+
+        self._demand_samples_matrix = np.array(self._demand_samples_matrix)
+        self._yield_samples_matrix = np.array(self._yield_samples_matrix)
+
+    def solve(self, risk_aversion=0, cvar=0.05) -> dict[str, int]:
+        self.risk_aversion = risk_aversion
+        self.cvar = 0.05
+
+        n_items = len(self.problems)
+        names = list(self.limits.keys())
+
+        # Constraint Matrix
+        A = np.zeros((len(names), n_items))
+        upper_bound = np.array(list(self.limits.values()))
+        lower_bound = np.array([-np.inf] * len(names))
+
+        for r, name in enumerate(names):
+            for c, (item, _) in enumerate(self.problems):
+                val = item.constraints.get(name, 0.0)
+                A[r, c] = val
+
+        linear_cons = LinearConstraint(A, lower_bound, upper_bound)
+
+        # Initial Guess
+        x0 = []
+        for i, (_, dem) in enumerate(self.problems):
+            d_mean = self._demand_samples_matrix[i].mean()
+            y_mean = self._yield_samples_matrix[i].mean()
+            x0.append(d_mean / max(y_mean, 0.01))
+
+        x0 = np.array(x0)
+        bounds = [(0, np.inf) for _ in range(n_items)]
+
+        # Optimize
+        res = minimize(
+            fun=self._objective_function,
+            x0=x0,
+            method="trust-constr",
+            constraints=[linear_cons],
+            bounds=bounds,
+        )
+
+        if res.v:
+            self.lambdas = {n: float(abs(x)) for n, x in zip(names, res.v[0])}
+
+        # Return integer quantities
+        allocation = np.floor(res.x).astype(int)
+        self.allocation = {
+            self.problems[i][0].name: q for i, q in enumerate(allocation)
+        }
+        return self.allocation
+
+    def _objective_function(self, quantities):
+        Q = quantities.reshape(-1, 1)
+
+        Q_eff = Q * self._yield_samples_matrix
+        Sales = np.minimum(Q_eff, self._demand_samples_matrix)
+        Leftover = Q_eff - Sales
+
+        prices = np.array([p[0].selling_price for p in self.problems]).reshape(-1, 1)
+        costs = np.array([p[0].cost_price for p in self.problems]).reshape(-1, 1)
+        salvages = np.array([p[0].salvage_value for p in self.problems]).reshape(-1, 1)
+
+        Revenue = Sales * prices
+        Salvage = Leftover * salvages
+        Cost = Q * costs
+
+        # Sum profit across items to get Portfolio Profit per scenario
+        portfolio_profit = np.sum(Revenue + Salvage - Cost, axis=0)
+
+        mean_profit = np.mean(portfolio_profit)
+
+        if self.risk_aversion == 0:
+            return -mean_profit
+
+        # CVaR Calculation: Average of the worst alpha% outcomes
+        k = int(self.n_samples * self.cvar)
+        # Partition puts the smallest k elements at the front (unsorted)
+        partitioned = np.partition(portfolio_profit, k)
+        cvar_val = np.mean(partitioned[:k])
+
+        # Weighted Objective
+        obj = (1 - self.risk_aversion) * mean_profit + self.risk_aversion * cvar_val
+
+        return -obj
