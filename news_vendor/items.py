@@ -1,3 +1,6 @@
+from .yeild_distributions import PerfectYield, YieldDistribution
+
+
 class Item:
     """
     Represents a single item, encapsulating its cost structure.
@@ -10,6 +13,7 @@ class Item:
         selling_price: float,
         salvage_value: float = 0.0,
         constraints: dict[str, float] = {},
+        yield_distribution: None | YieldDistribution = None,
     ):
         """
         Initializes the Item.
@@ -19,6 +23,7 @@ class Item:
             selling_price (float): The price the item is sold at.
             salvage_value (float): The value (e.g., discount price, scrap)
                                      of an unsold item. Defaults to 0.0.
+            constraint (dict): Dictionary of values to use for constraints. I.e {"storage" : 20}
         """
         if not (selling_price > cost_price > salvage_value >= 0):
             raise ValueError(
@@ -30,6 +35,9 @@ class Item:
         self.selling_price = selling_price
         self.salvage_value = salvage_value
         self.constraints = constraints
+        self.yield_distribution = (
+            PerfectYield() if yield_distribution is None else yield_distribution
+        )
 
     @property
     def underage_cost(self) -> float:
