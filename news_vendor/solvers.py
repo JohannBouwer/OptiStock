@@ -298,7 +298,7 @@ class StochasticMonteCarloSolver(Solver):
         self._demand_samples_matrix = np.array(self._demand_samples_matrix)
         self._yield_samples_matrix = np.array(self._yield_samples_matrix)
 
-    def solve(self, risk_aversion=0, cvar=0.05) -> dict[str, int]:
+    def solve(self, method="Utility", risk_aversion=0, cvar=0.05) -> dict[str, int]:
         self.risk_aversion = risk_aversion
         self.cvar = cvar
 
@@ -327,9 +327,15 @@ class StochasticMonteCarloSolver(Solver):
         x0 = np.array(x0)
         bounds = [(0, np.inf) for _ in range(n_items)]
 
+        match method:
+            case "Utility":
+                obj_func = self._utility_function
+            case "CVAR":
+                obj_func = self._CVAR_function
+
         # Optimize
         res = minimize(
-            fun=self._objective_function,
+            fun=obj_func,
             x0=x0,
             method="trust-constr",
             constraints=[linear_cons],
@@ -346,7 +352,7 @@ class StochasticMonteCarloSolver(Solver):
         }
         return self.allocation
 
-    def _objective_function(self, quantities):
+    def _CVAR_function(self, quantities):
         Q = quantities.reshape(-1, 1)
 
         Q_eff = Q * self._yield_samples_matrix
@@ -379,3 +385,38 @@ class StochasticMonteCarloSolver(Solver):
         obj = (1 - self.risk_aversion) * mean_profit + self.risk_aversion * cvar_val
 
         return -obj
+
+    def _utility_function(self, quantities):
+        Q = quantities.reshape(-1, 1)
+        Q_eff = Q * self._yield_samples_matrix
+        Sales = np.minimum(Q_eff, self._demand_samples_matrix)
+        Leftover = Q_eff - Sales
+
+        prices = np.array([p[0].selling_price for p in self.problems]).reshape(-1, 1)
+        costs = np.array([p[0].cost_price for p in self.problems]).reshape(-1, 1)
+        salvages = np.array([p[0].salvage_value for p in self.problems]).reshape(-1, 1)
+
+        Revenue = Sales * prices
+        Salvage = Leftover * salvages
+        Cost = Q * costs
+
+        portfolio_profit = np.sum(Revenue + Salvage - Cost, axis=0)
+
+        if self.risk_aversion == 0:
+            return -np.mean(portfolio_profit)
+
+        # Use the dynamically scaled lambda
+        # We normalize the exponential input to avoid overflow/underflow
+        # U(x) = -exp(-lam * x)
+
+        est_revenue = 0.0
+        for i, (item, _) in enumerate(self.problems):
+            # Mean demand * Price
+            est_revenue += self._demand_samples_matrix[i].mean() * item.selling_price
+
+        profit_scale = max(1.0, est_revenue)  # Avoid div/0
+
+        # Lambda = RRA / Wealth
+        self._current_lambda = self.risk_aversion / profit_scale
+
+        return np.mean(np.exp(-self._current_lambda * portfolio_profit))
