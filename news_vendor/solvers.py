@@ -19,11 +19,11 @@ class Solver(ABC):
         pass
 
 
-class SingleItemNewsvendorSolver(Solver):
+class SingleItemSolver(Solver):
     """
     Solves the classic (single-item) Newsvendor problem.
 
-    Use Case: One item problem with no contraints
+    Use Case: One item problem with no constraints
     """
 
     def __init__(self, item: Item, demand_distribution: DemandDistribution):
@@ -69,9 +69,9 @@ class SingleItemNewsvendorSolver(Solver):
 
 class MultiItemConstrainedSolver(Solver):
     """
-    Solves the case for multiple items with a budget contraint using a "greedy" approach
+    Solves the case for multiple items with a budget constraint using a "greedy" approach
 
-    Use Case: Multiple Items with one budget contraint. Best for small order quatities for few number of items.
+    Use Case: Multiple Items with one budget constraint. Best for small order quantities for few number of items.
 
     - It calculates the Expected Marginal Profit of buying one more unit for every item.
 
@@ -148,6 +148,12 @@ class MultiItemConstrainedSolver(Solver):
 
 
 class ScipyOptimizationSolver(Solver):
+    """
+    A trust-region solver that returns the lagrangian multipliers for each constraint.
+
+    TODO: At the moment only handles normal demand distributions.
+    """
+
     def __init__(
         self,
         problems: list[tuple[Item, DemandDistribution]],
@@ -294,7 +300,7 @@ class StochasticMonteCarloSolver(Solver):
 
     def solve(self, risk_aversion=0, cvar=0.05) -> dict[str, int]:
         self.risk_aversion = risk_aversion
-        self.cvar = 0.05
+        self.cvar = cvar
 
         n_items = len(self.problems)
         names = list(self.limits.keys())
