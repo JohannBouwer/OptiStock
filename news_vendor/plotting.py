@@ -406,3 +406,95 @@ class NewsvendorVisualizer:
         ax.set_xlabel("Order Quantity")
         ax.set_ylabel("Profit")
         ax.legend(fontsize="small")
+
+    def plot_risk_comparison(
+        self,
+        allocations: Dict[str, Dict[str, int]],
+        problems: List[Tuple[Item, DemandDistribution]],
+        n_sims: int = 5000,
+    ):
+        """
+        Overlays profit distributions for multiple allocation strategies.
+        allocations: Dictionary where Key=Label (e.g. 'Lambda=0.5') and Value=Allocation Dict.
+        """
+        fig, ax = plt.subplots(figsize=(12, 8))
+
+        # Generate distinct colors for N profiles
+        palette = sns.color_palette("viridis", len(allocations))
+        summary_data = []
+
+        # Helper to simulate profit distribution
+        def get_profit_dist(alloc):
+            total_profits = np.zeros(n_sims)
+            for item, demand_dist in problems:
+                q = alloc.get(item.name, 0)
+
+                # Demand Sampling
+                if hasattr(demand_dist, "samples"):
+                    d_samp = np.random.choice(demand_dist.samples, n_sims)
+                else:
+                    d_samp = np.random.normal(demand_dist.mean, demand_dist.std, n_sims)
+                    d_samp = np.maximum(0, d_samp)
+
+                # Yield Sampling (Handle missing yield attr safely)
+                if hasattr(item, "yield_distribution") and item.yield_distribution:
+                    y_samp = item.yield_distribution.sample(n_sims)
+                else:
+                    y_samp = np.ones(n_sims)
+
+                # Calculation
+                q_eff = q * y_samp
+                sales = np.minimum(q_eff, d_samp)
+                leftover = q_eff - sales
+
+                profit = (
+                    (sales * item.selling_price)
+                    + (leftover * item.salvage_value)
+                    - (q * item.cost_price)
+                )
+                total_profits += profit
+            return total_profits
+
+        # Iterate and Plot
+        for idx, (label, allocation) in enumerate(allocations.items()):
+            dist = get_profit_dist(allocation)
+            color = palette[idx]
+
+            # Plot KDE
+            sns.kdeplot(
+                dist,
+                fill=True,
+                color=color,
+                label=label,
+                ax=ax,
+                alpha=0.15,
+                linewidth=2,
+            )
+
+            # Metrics
+            mean_val = np.mean(dist)
+            cvar_5 = np.percentile(dist, 5)  # 5th Percentile (Worst Case)
+
+            # Add Vertical Indicators
+            ax.axvline(mean_val, color=color, linestyle="--", alpha=0.6)  # Mean
+            ax.axvline(cvar_5, color=color, linestyle=":", alpha=0.6)  # CVaR
+
+            summary_data.append([label, f"{mean_val:,.0f}", f"{cvar_5:,.0f}"])
+
+        ax.set_title("Portfolio Profit Distribution: Risk Profile Comparison")
+        ax.set_xlabel("Total Profit)")
+        ax.set_ylabel("Probability Density")
+        ax.legend()
+
+        # Add Summary Table below plot
+        table = ax.table(
+            cellText=summary_data,
+            colLabels=["Profile", "Mean Profit", "Worst 5% (CVaR)"],
+            loc="bottom",
+            cellLoc="center",
+            bbox=[0.0, -0.3, 1.0, 0.15 + (0.02 * len(allocations))],
+        )  # Dynamic height
+
+        # Adjust margin to fit table
+        plt.subplots_adjust(left=0.1, bottom=0.3)
+        plt.show()
