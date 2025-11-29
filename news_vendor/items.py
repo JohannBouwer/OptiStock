@@ -1,4 +1,4 @@
-from .yeild_distributions import PerfectYield, YieldDistribution
+from .yield_distributions import PerfectYield, YieldDistribution
 
 
 class Item:
