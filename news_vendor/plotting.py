@@ -33,7 +33,8 @@ class NewsvendorVisualizer:
         self._plot_profit_curve(ax2, item, demand, quantity)
 
         plt.tight_layout()
-        plt.show()
+
+        return fig
 
     def plot_multi_item_allocation(
         self,
@@ -97,7 +98,8 @@ class NewsvendorVisualizer:
             self._plot_profit_curve(ax_prof, item, demand, q_val)
 
         plt.tight_layout()
-        plt.show()
+
+        return fig
 
     def plot_constrained_allocation(
         self,
@@ -195,7 +197,8 @@ class NewsvendorVisualizer:
             self._plot_profit_curve(ax_prof, item, demand, q_val)
 
         plt.tight_layout()
-        plt.show()
+
+        return fig
 
     def plot_optimization_summary(
         self,
@@ -294,7 +297,8 @@ class NewsvendorVisualizer:
         ax_item.set_ylabel("Expected Profit")
 
         plt.tight_layout()
-        plt.show()
+
+        return fig
 
     def _calculate_expected_profit(self, item, demand, q):
         # Helper to calculate profit for a specific Q
@@ -352,6 +356,8 @@ class NewsvendorVisualizer:
         ax.set_ylabel("Probability Density")
         ax.legend()
 
+        return ax
+
     def _plot_profit_curve(self, ax, item, demand, q_star):
         # Determine meaningful range for the plot
         # If constrained q_star is low, we still want to see the potential peak (near mean)
@@ -406,6 +412,8 @@ class NewsvendorVisualizer:
         ax.set_xlabel("Order Quantity")
         ax.set_ylabel("Profit")
         ax.legend(fontsize="small")
+
+        return ax
 
     def plot_risk_comparison(
         self,
@@ -497,4 +505,5 @@ class NewsvendorVisualizer:
 
         # Adjust margin to fit table
         plt.subplots_adjust(left=0.1, bottom=0.3)
-        plt.show()
+
+        return fig
