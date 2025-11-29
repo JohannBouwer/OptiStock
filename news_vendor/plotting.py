@@ -411,7 +411,7 @@ class NewsvendorVisualizer:
         self,
         allocations: Dict[str, Dict[str, int]],
         problems: List[Tuple[Item, DemandDistribution]],
-        n_sims: int = 5000,
+        n_sims: int = 10000,
     ):
         """
         Overlays profit distributions for multiple allocation strategies.
