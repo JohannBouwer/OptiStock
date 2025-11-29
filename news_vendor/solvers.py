@@ -298,7 +298,9 @@ class StochasticMonteCarloSolver(Solver):
         self._demand_samples_matrix = np.array(self._demand_samples_matrix)
         self._yield_samples_matrix = np.array(self._yield_samples_matrix)
 
-    def solve(self, method="Utility", risk_aversion=0, cvar=0.05) -> dict[str, int]:
+    def solve(
+        self, method="Utility", risk_aversion: float = 0.0, cvar: float = 0.05
+    ) -> dict[str, int]:
         self.risk_aversion = risk_aversion
         self.cvar = cvar
 
