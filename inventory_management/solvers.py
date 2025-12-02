@@ -1,4 +1,4 @@
-from .demand_distribution import DemandDistribution
+from .distributions.demand_distributions import DemandDistribution
 from .items import Item
 from abc import ABC, abstractmethod
 import math
