@@ -1,2 +1,3 @@
 /news_vendor/__pycache__
 *.pyc
+/inventory_management.egg-info
