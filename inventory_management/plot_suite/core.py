@@ -32,7 +32,9 @@ def calculate_expected_profit(item, demand, q):
     return np.mean(rev + salvage - cost)
 
 
-def plot_demand_distribution_helper(ax, item, demand, q_star):
+def plot_demand_distribution_helper(
+    ax, item, demand, q_star, color="blue", label_prefix="item"
+):
     """
     Plots the demand distribution (Histogram or PDF) on a given axes.
     """
@@ -40,19 +42,19 @@ def plot_demand_distribution_helper(ax, item, demand, q_star):
         x_min, x_max = demand.samples.min(), demand.samples.max()
         x_range = np.linspace(x_min, x_max, 200)
         sns.histplot(
-            demand.samples, kde=True, ax=ax, stat="density", alpha=0.3, color="blue"
+            demand.samples, kde=True, ax=ax, stat="density", alpha=0.3, color=color
         )
     else:
         x_min = max(0, demand.mean - 4 * demand.std)
         x_max = demand.mean + 4 * demand.std
         x_range = np.linspace(x_min, x_max, 200)
         y_vals = norm.pdf(x_range, demand.mean, demand.std)
-        ax.plot(x_range, y_vals, color="blue", lw=2)
-        ax.fill_between(x_range, y_vals, alpha=0.2, color="blue")
+        ax.plot(x_range, y_vals, color=color, lw=2, label=label_prefix)
+        ax.fill_between(x_range, y_vals, alpha=0.2, color=color)
 
     ax.axvline(
         q_star,
-        color="red",
+        color=color,
         linestyle="--",
         linewidth=2,
         label=f"Order Qty (Q*) = {q_star}",
@@ -64,7 +66,9 @@ def plot_demand_distribution_helper(ax, item, demand, q_star):
     return ax
 
 
-def plot_profit_curve_helper(ax, item, demand, q_star):
+def plot_profit_curve_helper(
+    ax, item, demand, q_star, color="green", label_prefix="item"
+):
     """
     Plots the expected profit vs order quantity curve.
     """
@@ -97,10 +101,10 @@ def plot_profit_curve_helper(ax, item, demand, q_star):
         cost = q * item.cost_price
         profits.append(np.mean(revenue + salvage - cost))
 
-    ax.plot(q_range, profits, color="green", lw=2)
+    ax.plot(q_range, profits, color=color, lw=2, label=label_prefix)
     ax.axvline(
         q_star,
-        color="black",
+        color=color,
         linestyle="--",
         alpha=0.5,
         label=f"Allocated: {q_star}",
@@ -108,9 +112,7 @@ def plot_profit_curve_helper(ax, item, demand, q_star):
 
     max_profit_idx = np.argmax(profits)
     peak_q = q_range[max_profit_idx]
-    ax.scatter(
-        [peak_q], [profits[max_profit_idx]], color="green", s=30, label="Ideal Peak"
-    )
+    ax.scatter([peak_q], [profits[max_profit_idx]], color="green", s=30)
 
     ax.set_title(f"Expected Profit Curve: {item.name}")
     ax.set_xlabel("Order Quantity")
