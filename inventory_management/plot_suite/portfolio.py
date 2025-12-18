@@ -290,9 +290,9 @@ def plot_optimization_summary(allocation, inventory_problems, lambdas=None):
         sns.barplot(
             x=values, y=names, ax=ax_lambdas, palette=colors, hue=names, legend=False
         )
-        ax_lambdas.set_title("Shadow Prices (Marginal Value)")
+        ax_lambdas.set_title("Lagrangian Multipliers (Marginal Value)")
     else:
-        ax_lambdas.text(0.5, 0.5, "No Shadow Prices Available", ha="center")
+        ax_lambdas.text(0.5, 0.5, "No Lagrangian Multipliers Available", ha="center")
         ax_lambdas.axis("off")
 
     # 3. Item Contribution
