@@ -188,13 +188,18 @@ class ScipyOptimizationSolver(Solver):
         x0 = np.array([d.mean for _, d in self.problems])
         bounds = [(0, np.inf) for _ in range(n_items)]
 
-        # 3. Solve
+        # Solve
+        # Define a Hessian function that returns a zero matrix as the constraints are linear
+        def hess_zero(x):
+            return np.zeros((len(x), len(x)))
+
         result = minimize(
             fun=self._objective_function,
             x0=x0,
             method="trust-constr",
             bounds=bounds,
             constraints=[linear_cons],
+            hess=hess_zero,
         )
 
         # Extract Lambdas
@@ -336,12 +341,17 @@ class StochasticMonteCarloSolver(Solver):
                 obj_func = self._CVAR_function
 
         # Optimize
+        # Define a Hessian function that returns a zero matrix as the constraints are linear
+        def hess_zero(x):
+            return np.zeros((len(x), len(x)))
+
         res = minimize(
             fun=obj_func,
             x0=x0,
             method="trust-constr",
             constraints=[linear_cons],
             bounds=bounds,
+            hess=hess_zero,
         )
 
         if res.v:
