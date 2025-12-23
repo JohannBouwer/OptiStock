@@ -18,7 +18,9 @@ dependencies = [
     "seaborn",
     "streamlit",
     "ipywidgets",
-    "xarray"
+    "xarray",
+    "pymc",
+    "arviz",
 ]
 
 [tool.setuptools.packages.find]
