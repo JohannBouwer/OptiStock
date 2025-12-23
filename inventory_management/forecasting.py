@@ -109,7 +109,7 @@ class BayesTimeSeries(BaseForecaster):
             self.event_X = np.zeros((len(df), 1))
 
         model_coords = {
-            "time": t,
+            "time": df[date_col],
             "fourier_feature": self.fourier_names,
             "event": self.event_names,
         }
@@ -222,7 +222,7 @@ class BayesTimeSeries(BaseForecaster):
                         n_forecast
                     ),  # Placeholder for future observations
                 },
-                coords={"time": t_future},
+                coords={"time": df_future[date_col]},
             )
 
             # Sample from the posterior predictive
@@ -239,6 +239,7 @@ class BayesTimeSeries(BaseForecaster):
         Plots the forecast with 94% HDI uncertainty intervals.
         """
 
+        dates = self.forecast_idata.predictions.time
         # Extract mean and HDI
         mu_samples = self.forecast_idata.predictions["y"]
         mu_mean = mu_samples.mean(dim=["chain", "draw"])
@@ -246,9 +247,9 @@ class BayesTimeSeries(BaseForecaster):
 
         fig, ax = plt.subplots(1, 1, figsize=(12, 6))
 
-        ax.plot(mu_mean, label="Forecast Mean", color="C0", lw=2)
+        ax.plot(dates, mu_mean, label="Forecast Mean", color="C0", lw=2)
         ax.fill_between(
-            range(len(mu_mean)),
+            dates,
             hdi_data[:, 0],
             hdi_data[:, 1],
             alpha=0.3,
@@ -274,9 +275,10 @@ class BayesTimeSeries(BaseForecaster):
 
         # Extract inference data
         post = self.idata.posterior
+        dates = self.idata.posterior.time
 
-        # Define components to plot
-        colors = ["C1", "C2", "C3", "C0"]
+        cmap = plt.get_cmap("tab10")
+        colors = [cmap(i) for i in np.linspace(0, 1, len(components))]
 
         fig, axes = plt.subplots(len(components), 1, figsize=(12, 12), sharex=True)
 
@@ -285,9 +287,11 @@ class BayesTimeSeries(BaseForecaster):
             mean = post[comp].mean(dim=["chain", "draw"])
             hdi = az.hdi(post[comp], hdi_prob=0.94)[comp]
 
-            axes[i].plot(mean, color=color, lw=2, label=f"{comp.capitalize()} (Mean)")
+            axes[i].plot(
+                dates, mean, color=color, lw=2, label=f"{comp.capitalize()} (Mean)"
+            )
             axes[i].fill_between(
-                range(len(mean)),
+                dates,
                 hdi[:, 0],
                 hdi[:, 1],
                 color=color,
@@ -298,7 +302,7 @@ class BayesTimeSeries(BaseForecaster):
             axes[i].legend(loc="upper left")
             axes[i].grid(axis="y", linestyle="--", alpha=0.5)
 
-        plt.xlabel("Days (Forecast Horizon)")
+        plt.xlabel("Dates")
         plt.tight_layout()
         plt.show()
 
