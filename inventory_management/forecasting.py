@@ -40,18 +40,33 @@ class BaseForecaster(ABC):
         """
         pass
 
+    def get_demand_distribution(self, start_date: str, end_date: str) -> xr.DataArray:
+        """
+        Generate a forecast sampled distribution over a time frame. The demand is summed to generate a total demand.
+        """
+        pass
 
-default_seasonal_config = {"weekly": (7, 3), "yearly": (365.25, 4)}
+
+default_seasonal_config = {
+    "weekly": (7, 3),
+    "monthly": (30.5, 1),
+    "yearly": (365.25, 4),
+}
 
 
 class BayesTimeSeries(BaseForecaster):
     def __init__(
-        self, data: pd.DataFrame, seasonal_config: dict = default_seasonal_config
+        self,
+        data: pd.DataFrame,
+        target_col: str = "sales",
+        seasonal_config: dict = default_seasonal_config,
     ) -> None:
         self.data = data
+        self.target_col = target_col
         self.seasonal_config = seasonal_config
         self.model = None
         self.idata = None
+        self.forecast_idata = None
         self.item_map = None
         self.fourier_names = None
 
@@ -98,6 +113,11 @@ class BayesTimeSeries(BaseForecaster):
     ):
         df = self.data.copy()
         df[date_col] = pd.to_datetime(df[date_col])
+
+        # min-max scale date
+        df[target] = df[target].astype("float")
+        self.max_scaler = df[target].max()
+        df[target] = df[target].div(self.max_scaler)
 
         # set up time and fourier modes
         t = np.arange(len(df))
@@ -234,7 +254,7 @@ class BayesTimeSeries(BaseForecaster):
 
         return self.forecast_idata
 
-    def plot_forecast(self, date_col: str = "date"):
+    def plot_forecast(self):
         """
         Plots the forecast with 94% HDI uncertainty intervals.
         """
@@ -258,7 +278,6 @@ class BayesTimeSeries(BaseForecaster):
         )
         ax.set_title("Posterior Predictive Forecast")
         ax.legend()
-        plt.show()
 
         return (fig, ax)
 
@@ -274,8 +293,8 @@ class BayesTimeSeries(BaseForecaster):
             raise ValueError("You must run .fit() before plotting components.")
 
         # Extract inference data
-        post = self.idata.posterior
-        dates = self.idata.posterior.time
+        post = self.idata.posterior  # type: ignore
+        dates = self.idata.posterior.time  # type: ignore
 
         cmap = plt.get_cmap("tab10")
         colors = [cmap(i) for i in np.linspace(0, 1, len(components))]
@@ -307,3 +326,11 @@ class BayesTimeSeries(BaseForecaster):
         plt.show()
 
         return (fig, axes)
+
+    def get_demand_distribution(self, start_date: str, end_date: str) -> xr.DataArray:
+        if self.forecast_idata is None:
+            raise RuntimeError("You must call .predict() before accessing results")
+
+        demands = self.forecast_idata.predictions.sel(time=slice(start_date, end_date))
+
+        return demands.sum(dim=("time"))
