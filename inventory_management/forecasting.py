@@ -40,9 +40,9 @@ class BaseForecaster(ABC):
         """
         pass
 
-    def get_demand_distribution(self, start_date: str, end_date: str) -> xr.DataArray:
+    def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
         """
-        Generate a forecast sampled distribution over a time frame. The demand is summed to generate a total demand.
+        Generate a forecast sampled distribution over a time frame. The demand is summed to generate a total demand in the original scale.
         """
         pass
 
@@ -333,4 +333,4 @@ class BayesTimeSeries(BaseForecaster):
 
         demands = self.forecast_idata.predictions.sel(time=slice(start_date, end_date))
 
-        return demands.sum(dim=("time"))
+        return demands.sum(dim=("time")) * self.max_scaler
