@@ -365,12 +365,14 @@ class BARTBayesTimeSeries(BaseForecaster):
         )  # type: ignore
         return X.astype(float)
 
-    def fit(self, target: str = "sales", date_col: str = "date", samples=1000):
+    def fit(
+        self, target: str = "sales", date_col: str = "date", samples=1000, trees=50
+    ):
         df = self.data.copy()
 
         # min-max scaling
-        self.max_scaler = df[self.target_col].max()
-        y_scaled = df[self.target_col].div(self.max_scaler).values
+        self.max_scaler = df[target].max()
+        y_scaled = df[target].div(self.max_scaler).values
 
         self.X = self._prepare_features(df, date_col)
 
@@ -382,7 +384,7 @@ class BARTBayesTimeSeries(BaseForecaster):
             X_shared = pm.Data("X_data", self.X, dims=("time", "feature"))
             y_shared = pm.Data("y_obs", y_scaled, dims="time")
 
-            mu = pmb.BART("mu", X_shared, y_shared, dims="time")
+            mu = pmb.BART("mu", X_shared, y_shared, dims="time", m=trees)
 
             sigma = pm.HalfNormal("sigma", sigma=0.1)
             pm.Normal("y", mu=mu, sigma=sigma, observed=y_shared, dims="time")
@@ -444,24 +446,33 @@ class BARTBayesTimeSeries(BaseForecaster):
 
         return (fig, ax)
 
-    def plot_components(self):
+    def plot_components(self) -> tuple:
         """
-        Visualizes BART 'components' using Partial Dependence Plots (PDP).
-        In BART, this shows how the prediction changes as each feature
-        (Trend, Weekday, DayOfYear) varies.
+        Visualizes BART 'components' and Variable Importance.
+        This is done at the "average" of all other variables
         """
         if self.idata is None:
             raise RuntimeError("You must call .fit() before plotting.")
 
-        # We must use the BART variable from the model, NOT the idata
-        # We also pass the idata so BART knows which samples to use
-        fig, axes = pmb.plot_pdp(
-            self.model["mu"],
+        fig, ax = plt.subplots(4, 1, figsize=(12, 12))
+        pmb.plot_pdp(
+            self.model["mu"],  # type: ignore
             X=self.X,
-            idata=self.idata,
-            var_names=["Trend", "DayOfWeek", "DayOfYear", "DayOfMonth"],
+            func=lambda x: x * self.max_scaler,
+            ax=ax,
         )
+        labels = ["Trend", "Weekly", "Yearly", "Monthly"]
+        for a, l in zip(ax, labels):
+            a.set_xlabel(l)
 
-        plt.tight_layout()
-        plt.show()
-        return (fig, axes)
+        fig.tight_layout()
+
+        return (fig, ax)
+
+    def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
+        if self.forecast_idata is None:
+            raise RuntimeError("You must call .predict() before accessing results")
+
+        demands = self.forecast_idata.predictions.sel(time=slice(start_date, end_date))
+
+        return demands.sum(dim=("time")) * self.max_scaler
