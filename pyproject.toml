@@ -21,6 +21,7 @@ dependencies = [
     "xarray",
     "pymc",
     "arviz",
+    "pymc-bart"
 ]
 
 [tool.setuptools.packages.find]
