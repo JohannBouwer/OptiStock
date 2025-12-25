@@ -1,4 +1,5 @@
 import pymc as pm
+import pymc_bart as pmb
 import xarray as xr
 import pandas as pd
 import arviz as az
@@ -327,10 +328,140 @@ class BayesTimeSeries(BaseForecaster):
 
         return (fig, axes)
 
-    def get_demand_distribution(self, start_date: str, end_date: str) -> xr.DataArray:
+    def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
         if self.forecast_idata is None:
             raise RuntimeError("You must call .predict() before accessing results")
 
         demands = self.forecast_idata.predictions.sel(time=slice(start_date, end_date))
 
         return demands.sum(dim=("time")) * self.max_scaler
+
+
+class BARTBayesTimeSeries(BaseForecaster):
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        target_col: str = "sales",
+    ) -> None:
+        self.data = data
+        self.target_col = target_col
+        self.model = None
+        self.idata = None
+        self.forecast_idata = None
+
+    def _prepare_features(self, df: pd.DataFrame, date_col: str):
+        """
+        BART needs raw time features to 'learn' seasonality.
+        Instead of Fourier, we provide time-based integers.
+        """
+        dates = pd.to_datetime(df[date_col])
+        X = np.column_stack(
+            [
+                np.arange(len(df)),  # Trend (time index)
+                dates.dt.dayofweek.values,  # Weekly seasonality
+                dates.dt.dayofyear.values,  # Yearly seasonality
+                dates.dt.day.values,  # type: ignore # Monthly seasonality
+            ]
+        )  # type: ignore
+        return X.astype(float)
+
+    def fit(self, target: str = "sales", date_col: str = "date", samples=1000):
+        df = self.data.copy()
+
+        # min-max scaling
+        self.max_scaler = df[self.target_col].max()
+        y_scaled = df[self.target_col].div(self.max_scaler).values
+
+        self.X = self._prepare_features(df, date_col)
+
+        model_coords = {
+            "time": df[date_col],
+        }
+
+        with pm.Model(coords=model_coords) as self.model:
+            X_shared = pm.Data("X_data", self.X, dims=("time", "feature"))
+            y_shared = pm.Data("y_obs", y_scaled, dims="time")
+
+            mu = pmb.BART("mu", X_shared, y_shared, dims="time")
+
+            sigma = pm.HalfNormal("sigma", sigma=0.1)
+            pm.Normal("y", mu=mu, sigma=sigma, observed=y_shared, dims="time")
+
+            self.idata = pm.sample(samples)
+            return self.idata
+
+    def predict(self, df_future: pd.DataFrame, date_col: str = "date"):
+        X_future = self._prepare_features(df_future, date_col)
+        # update future index for trend
+        X_future[:, 0] += self.X[-1, 0]
+
+        with self.model:
+            pm.set_data(
+                {"X_data": X_future, "y_obs": np.zeros(len(df_future))},
+                coords={"time": df_future[date_col]},
+            )
+
+            self.forecast_idata = pm.sample_posterior_predictive(
+                self.idata, predictions=True
+            )
+        return self.forecast_idata
+
+    def plot_forecast(self):
+        """
+        Plots the BART forecast with 94% HDI uncertainty intervals.
+        """
+        if self.forecast_idata is None:
+            raise RuntimeError("You must call .predict() before plotting.")
+
+        # Extract dates and predictive samples
+        dates = self.forecast_idata.predictions.time
+        y_samples = self.forecast_idata.predictions["y"]
+
+        # Calculate summary statistics
+        y_mean = y_samples.mean(dim=["chain", "draw"])
+        hdi_data = az.hdi(y_samples, hdi_prob=0.94)["y"]
+
+        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+
+        # Plot the mean prediction
+        ax.plot(dates, y_mean, label="BART Forecast Mean", color="C0", lw=2)
+
+        # Plot the uncertainty interval
+        ax.fill_between(
+            dates,
+            hdi_data.sel(hdi="lower"),
+            hdi_data.sel(hdi="higher"),
+            alpha=0.3,
+            label="94% HDI (Uncertainty)",
+            color="C0",
+        )
+
+        ax.set_title("BART Posterior Predictive Forecast")
+        ax.set_xlabel("Date")
+        ax.set_ylabel("Sales (Scaled)")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        return (fig, ax)
+
+    def plot_components(self):
+        """
+        Visualizes BART 'components' using Partial Dependence Plots (PDP).
+        In BART, this shows how the prediction changes as each feature
+        (Trend, Weekday, DayOfYear) varies.
+        """
+        if self.idata is None:
+            raise RuntimeError("You must call .fit() before plotting.")
+
+        # We must use the BART variable from the model, NOT the idata
+        # We also pass the idata so BART knows which samples to use
+        fig, axes = pmb.plot_pdp(
+            self.model["mu"],
+            X=self.X,
+            idata=self.idata,
+            var_names=["Trend", "DayOfWeek", "DayOfYear", "DayOfMonth"],
+        )
+
+        plt.tight_layout()
+        plt.show()
+        return (fig, axes)
