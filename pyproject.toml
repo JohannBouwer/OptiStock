@@ -3,13 +3,13 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "inventory_management"
+name = "optistock"
 version = "0.1.0"
 description = "Stochastic Inventory Optimization Framework"
+readme = "README.md"
 authors = [
   { name="Johann Mynhardt Bouwer", email="bouwer2608@gmail.com" },
 ]
-readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "numpy",
@@ -24,6 +24,9 @@ dependencies = [
     "pymc-bart"
 ]
 
+[project.urls]
+"Homepage" = "https://github.com/JohannBouwer/OptiStock"
+
 [tool.setuptools.packages.find]
-# This automatically finds the 'inventory_management' folder
 where = ["."]
+include = ["inventory_management*"]
