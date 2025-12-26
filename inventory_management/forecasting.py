@@ -441,6 +441,7 @@ class BARTBayesTimeSeries(BaseForecaster):
         ax.set_title("BART Posterior Predictive Forecast")
         ax.set_xlabel("Date")
         ax.set_ylabel("Sales (Scaled)")
+        ax.set_ylim(0, 1)
         ax.legend()
         ax.grid(True, alpha=0.3)
 
@@ -473,36 +474,38 @@ class BARTBayesTimeSeries(BaseForecaster):
         if self.forecast_idata is None:
             raise RuntimeError("You must call .predict() before accessing results")
 
-        demands = self.forecast_idata.predictions.sel(time=slice(start_date, end_date))
+        demands = self.forecast_idata.predictions.y.sel(
+            time=slice(start_date, end_date)
+        )
 
         return demands.sum(dim=("time")) * self.max_scaler
 
+
 class ErrorEstimations:
-
     def calculate_smape(actual, forecast):
-    """
-    Calculate the Symmetric Mean Absolute Percentage Error (SMAPE).
-    Parameters:
-    actual (array-like): The ground truth values.
-    forecast (array-like): The predicted values.
+        """
+        Calculate the Symmetric Mean Absolute Percentage Error (SMAPE).
+        Parameters:
+        actual (array-like): The ground truth values.
+        forecast (array-like): The predicted idata.
 
-    Returns:
-    float: The SMAPE value as a percentage (0 to 200).
-    """
-    # Convert inputs to numpy arrays for vectorized operations
-    actual = np.array(actual)
-    forecast = np.array(forecast)
+        Returns:
+        float: The SMAPE value as a percentage (0 to 200).
+        """
+        # Convert inputs to numpy arrays for vectorized operations
+        actual = np.array(actual)
+        forecast = np.array(forecast)
 
-    # Calculate the numerator (absolute difference)
-    numerator = np.abs(forecast - actual)
+        # Calculate the numerator (absolute difference)
+        numerator = np.abs(forecast - actual)
 
-    # Calculate the denominator (mean of absolute values)
-    denominator = (np.abs(actual) + np.abs(forecast)) / 2
+        # Calculate the denominator (mean of absolute values)
+        denominator = (np.abs(actual) + np.abs(forecast)) / 2
 
-    # Handle the case where both actual and forecast are 0 to avoid division by zero
-    # We return 0 for those specific points
-    smape_val = np.divide(
-        numerator, denominator, out=np.zeros_like(numerator), where=denominator != 0
-    )
+        # Handle the case where both actual and forecast are 0 to avoid division by zero
+        # We return 0 for those specific points
+        smape_val = np.divide(
+            numerator, denominator, out=np.zeros_like(numerator), where=denominator != 0
+        )
 
-    return np.mean(smape_val) * 100
+        return np.mean(smape_val) * 100
