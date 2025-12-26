@@ -8,6 +8,7 @@ A Python framework for solving inventory optimization problems. This library goe
 * [Inventory Optimization (News Vendor Framework)](https://www.google.com/search?q=%23inventory-optimization-news-vendor-framework)
 * [Key Features](https://www.google.com/search?q=%23key-features)
 * [Project Structure](https://www.google.com/search?q=%23project-structure)
+* [Probabilistic Demand Forecasting](https://www.google.com/search?q=%23probabilistic-demand-forecasting)
 * [The Basic Single-Item Problem](https://www.google.com/search?q=%23the-basic-single-item-problem)
 * [Multi-Item Constrained & Stochastic](https://www.google.com/search?q=%23multi-item-constrained--stochastic)
 
@@ -15,25 +16,64 @@ A Python framework for solving inventory optimization problems. This library goe
 
 ## Key Features
 
-* **Probabilistic Forecasting**: Implements Bayesian Time Series (PyMC) and Bayesian Additive Regression Trees (BART) to generate full demand distributions instead of point estimates.
-* **Beyond the Mean**: Implements the Newsvendor Model (Critical Fractile) to find optimal order quantities based on margin and volatility.
+* **Probabilistic Forecasting**: Implements Bayesian Time Series (PyMC) and Bayesian Additive Regression Trees (BART) to generate full demand distributions.
+* **Beyond the Mean**: Uses the Newsvendor Model (Critical Fractile) to find optimal order quantities based on margin and volatility.
 * **Constrained Optimization**: Solves multi-item portfolios with budget and storage constraints using Greedy ROI or Scipy Trust-Region methods.
-* **Double Uncertainty**: Simultaneously handles Demand Uncertainty (Sampled Posteriors) and Supply/Yield Uncertainty (Random Yield modeled via Beta distributions).
-* **Risk Aversion**: Optimizes for Conditional Value at Risk (CVaR) or Exponential Utility to penalize catastrophic tail risks.
+* **Risk Aversion**: Optimizes for Conditional Value at Risk (CVaR) or Exponential Utility to penalize tail risks.
 
 ## Project Structure
 
-* **`forecasting.py`**: Bayesian models (BART and Fourier-based) for time series demand forecasting.
-* **`items.py`**: Definitions for `Item` properties including costs, critical fractiles, and constraints.
-* **`solvers.py`**: Optimization engines (Single-Item, Multi-Item Greedy, Scipy Trust-Region, and Stochastic Monte Carlo).
-* **`distributions/`**:
-  * `demand_distributions.py`: Normal and Sampled (Bayesian) demand models.
-  * `yield_distributions.py`: Models for manufacturing uncertainty (Beta and Perfect yield).
-* **`plot_suite/`**: Modular visualization suite for risk profiles, portfolio allocations, and forecast components.
+* **`forecasting.py`**: Bayesian models for time series demand forecasting.
+* **`items.py`**: Definitions for `Item` costs, critical fractiles, and constraints.
+* **`solvers.py`**: Optimization engines (Single-Item, Multi-Item Greedy, Scipy, and Stochastic MC).
+* **`distributions/`**: Models for demand and supply (yield) uncertainty.
+
+## Probabilistic Demand Forecasting
+
+Generate full posterior predictive distributions instead of single-point estimates.
+
+### Fourier & Event-based Forecasting
+
+Capture complex seasonality and holiday effects using `BayesTimeSeries`.
+
+```python
+from inventory_management.forecasting import BayesTimeSeries
+from inventory_management.distributions.demand_distributions import SampledDemand
+
+# Initialize model and define promotional events
+model = BayesTimeSeries(df_history, target_col="sales")
+model.create_events({"Promo_A": ["2025-01-01", "2025-01-02"]})
+
+# Fit and predict a future window
+model.fit()
+model.predict(df_future)
+
+# Extract total demand samples for a specific period
+samples = model.get_demand_distribution("2025-01-01", "2025-01-07")
+demand_dist = SampledDemand(samples)
+
+```
+
+### Non-linear Seasonality with BART
+
+Use Bayesian Additive Regression Trees to learn patterns directly from data.
+
+```python
+from inventory_management.forecasting import BARTBayesTimeSeries
+
+# Fit BART model (automatically handles trend and seasonality)
+bart_model = BARTBayesTimeSeries(df_history)
+bart_model.fit(trees=50)
+
+# Generate forecast and visualize learned components
+bart_model.predict(df_future)
+fig, ax = bart_model.plot_components()
+
+```
 
 ## The Basic Single-Item Problem
 
-Find the optimal order quantity for a risky product based on cost of understocking vs. overstocking.
+Find the optimal order quantity () for a risky product.
 
 ```python
 from inventory_management.items import Item
@@ -41,44 +81,31 @@ from inventory_management.distributions.demand_distributions import NormalDemand
 from inventory_management.solvers import SingleItemSolver
 
 # Define Economics: Cost 30, Sell 50, Salvage 10 
-item = Item("Gaming Mouse", cost_price=30, selling_price=50, salvage_value=10)
-
-# Define Uncertainty (Normal or Sampled from a Forecast)
+item = Item("Gaming Mouse", 30, 50, 10)
 demand = NormalDemand(mean=100, std_dev=20)
 
-# Solve for Q* (Smallest Q such that P(D <= Q) >= Critical Fractile)
+# Solve for Q*
 solver = SingleItemSolver(item, demand)
 q_star = solver.solve() 
-
-print(f"Optimal Order Quantity: {q_star}")
 
 ```
 
 ## Multi-Item Constrained & Stochastic
 
-Optimize a portfolio with strict constraints and manufacturing yield risks using Monte Carlo simulation.
+Optimize a portfolio with strict constraints and manufacturing yield risks.
 
 ```python
 from inventory_management.solvers import StochasticMonteCarloSolver
 from inventory_management.distributions.yield_distributions import BetaYield
 
-# Define an item with a 70% mean yield (manufacturing risk)
-risky_chip = Item(
-    "AI Chip", 
-    cost_price=100, 
-    selling_price=200, 
-    salvage_value=20,
-    constraints={'storage': 5.0},
-    yield_distribution=BetaYield(alpha=7, beta_param=3)
-)
+# Item with 70% mean yield risk
+risky_chip = Item("AI Chip", 100, 200, 20, 
+                  yield_distribution=BetaYield(7, 3))
 
-# Setup Solver (Risk Averse using CVaR at 5% tail)
-solver = StochasticMonteCarloSolver(
-    problems=[(risky_chip, demand_dist)], 
-    limits={'storage': 500}
-)
+# Setup Solver (Risk Averse using CVaR)
+solver = StochasticMonteCarloSolver(problems=[(risky_chip, demand_dist)], 
+                                    limits={'budget': 50000})
 
-# Solve with risk_aversion (0.0 to 1.0)
-allocation = solver.solve(method="CVAR", risk_aversion=0.5, cvar=0.05)
+allocation = solver.solve(method="CVAR", risk_aversion=0.5)
 
 ```
