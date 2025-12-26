@@ -37,8 +37,8 @@ Generate full posterior predictive distributions instead of single-point estimat
 Capture complex seasonality and holiday effects using `BayesTimeSeries`.
 
 ```python
-from inventory_management.forecasting import BayesTimeSeries
-from inventory_management.distributions.demand_distributions import SampledDemand
+from optistock.forecasting import BayesTimeSeries
+from optistock.distributions.demand_distributions import SampledDemand
 
 # Initialize model and define promotional events
 model = BayesTimeSeries(df_history, target_col="sales")
@@ -59,7 +59,7 @@ demand_dist = SampledDemand(samples)
 Use Bayesian Additive Regression Trees to learn patterns directly from data.
 
 ```python
-from inventory_management.forecasting import BARTBayesTimeSeries
+from optistock.forecasting import BARTBayesTimeSeries
 
 # Fit BART model (automatically handles trend and seasonality)
 bart_model = BARTBayesTimeSeries(df_history)
@@ -76,9 +76,9 @@ fig, ax = bart_model.plot_components()
 Find the optimal order quantity () for a risky product.
 
 ```python
-from inventory_management.items import Item
-from inventory_management.distributions.demand_distributions import NormalDemand
-from inventory_management.solvers import SingleItemSolver
+from optistock.items import Item
+from optistock.distributions.demand_distributions import NormalDemand
+from optistock.solvers import SingleItemSolver
 
 # Define Economics: Cost 30, Sell 50, Salvage 10 
 item = Item("Gaming Mouse", 30, 50, 10)
@@ -95,8 +95,8 @@ q_star = solver.solve()
 Optimize a portfolio with strict constraints and manufacturing yield risks.
 
 ```python
-from inventory_management.solvers import StochasticMonteCarloSolver
-from inventory_management.distributions.yield_distributions import BetaYield
+from optistock.solvers import StochasticMonteCarloSolver
+from optistock.distributions.yield_distributions import BetaYield
 
 # Item with 70% mean yield risk
 risky_chip = Item("AI Chip", 100, 200, 20, 
