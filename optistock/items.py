@@ -12,6 +12,7 @@ class Item:
         cost_price: float,
         selling_price: float,
         salvage_value: float = 0.0,
+        Lead_time: int = 0,
         constraints: dict[str, float] = {},
         yield_distribution: None | YieldDistribution = None,
     ):
@@ -24,6 +25,8 @@ class Item:
             salvage_value (float): The value (e.g., discount price, scrap)
                                      of an unsold item. Defaults to 0.0.
             constraint (dict): Dictionary of values to use for constraints. I.e {"storage" : 20}
+            yield_distribution: Distribution of expected yield for 1 order
+            Lead_time: time it takes to either manufacture or get delivered 
         """
         if not (selling_price > cost_price > salvage_value >= 0):
             raise ValueError(
@@ -35,6 +38,7 @@ class Item:
         self.selling_price = selling_price
         self.salvage_value = salvage_value
         self.constraints = constraints
+        self.Lead_time = Lead_time
         self.yield_distribution = (
             PerfectYield() if yield_distribution is None else yield_distribution
         )
