@@ -5,13 +5,13 @@ import numpy as np
 from scipy.stats import norm
 import math
 
-from inventory_management.items import Item
-from inventory_management.distributions.demand_distributions import NormalDemand
-from inventory_management.distributions.yield_distributions import (
+from optistock.items import Item
+from optistock.distributions.demand_distributions import NormalDemand
+from optistock.distributions.yield_distributions import (
     BetaYield,
     PerfectYield,
 )
-from inventory_management.plot_suite.single_item import plot_single_item_analysis
+from optistock.plot_suite.single_item import plot_single_item_analysis
 
 
 def create_item_dashboard(initial_item, initial_demand):
