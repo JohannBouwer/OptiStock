@@ -344,6 +344,7 @@ class BARTBayesTimeSeries(BaseForecaster):
         target_col: str = "sales",
     ) -> None:
         self.data = data
+        self.len_df = len(data)
         self.target_col = target_col
         self.model = None
         self.idata = None
@@ -383,10 +384,28 @@ class BARTBayesTimeSeries(BaseForecaster):
         with pm.Model(coords=model_coords) as self.model:
             X_shared = pm.Data("X_data", self.X, dims=("time", "feature"))
             y_shared = pm.Data("y_obs", y_scaled, dims="time")
+            
+            intercept = pm.HalfNormal(
+                "intercept",
+                sigma=1.0,
+            )
+            growth = pm.Normal(
+                "growth",
+                mu=0.0,
+                sigma=1.0,
+            )
+            trend = pm.Deterministic(
+                "trend",
+                intercept + growth * X_shared[:,0],
+                dims="time",
+            )
 
-            mu = pmb.BART("mu", X_shared, y_shared, dims="time", m=trees)
+            bart = pmb.BART("bart", X_shared[:,1:], y_shared, dims="time", m=trees)
 
             sigma = pm.HalfNormal("sigma", sigma=0.1)
+            
+            mu = pm.Deterministic("mu", bart + trend, dims=("time"))
+            
             pm.Normal("y", mu=mu, sigma=sigma, observed=y_shared, dims="time")
 
             self.idata = pm.sample(samples)
@@ -455,14 +474,14 @@ class BARTBayesTimeSeries(BaseForecaster):
         if self.idata is None:
             raise RuntimeError("You must call .fit() before plotting.")
 
-        fig, ax = plt.subplots(4, 1, figsize=(12, 12))
+        fig, ax = plt.subplots(3, 1, figsize=(12, 12))
         pmb.plot_pdp(
-            self.model["mu"],  # type: ignore
-            X=self.X,
+            self.model["bart"],  # type: ignore
+            X=self.X[:,1:],
             func=lambda x: x * self.max_scaler,
             ax=ax,
         )
-        labels = ["Trend", "Weekly", "Yearly", "Monthly"]
+        labels = ["Weekly", "Yearly", "Monthly"]
         for a, l in zip(ax, labels):
             a.set_xlabel(l)
 
