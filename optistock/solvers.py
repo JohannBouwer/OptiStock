@@ -259,14 +259,17 @@ class ScipyOptimizationSolver(Solver):
 
 class StochasticMonteCarloSolver(Solver):
     """
-    Stochastic solver that takes into account the full yield and demand distributions.
+    Stochastic solver accounting for full yield and demand distributions.
 
-    It asses risk using the CVaR (Conditional Value at Risk) by punishing profit with the distance to the cvar value.
-    This value is punished using a risk_aversion metric (0 - 1), with 1 being extremely risk averse, and 0 not at all.
+    Risk is assessed using either Exponential Utility (default) or CVaR 
+    (Conditional Value at Risk). The objective function is penalized 
+    based on the `risk_aversion` parameter (0 to 1).
 
-    obj = (1 - self.risk_aversion) * mean_profit + self.risk_aversion * cvar_val
-
-    Default is 0 risk aversion at the 5% percentile.
+    Methods:
+    - Utility: Minimizes the expected exponential utility, effectively 
+      optimizing for risk-adjusted profit.
+    - CVAR: Optimizes a weighted sum of mean profit and the worst alpha% 
+      outcomes (Conditional Value at Risk).
     """
 
     def __init__(
