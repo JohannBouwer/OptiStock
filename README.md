@@ -5,14 +5,30 @@
 
 A Python framework for solving inventory optimization problems. This library goes beyond the standard "Order the Mean" approach, offering tools for constrained, stochastic, and risk-aware decision-making in stock supply allocation. 
 
-* [Inventory Optimization (News Vendor Framework)](https://www.google.com/search?q=%23inventory-optimization-news-vendor-framework)
-* [Key Features](https://www.google.com/search?q=%23key-features)
-* [Project Structure](https://www.google.com/search?q=%23project-structure)
-* [Probabilistic Demand Forecasting](https://www.google.com/search?q=%23probabilistic-demand-forecasting)
-* [The Basic Single-Item Problem](https://www.google.com/search?q=%23the-basic-single-item-problem)
-* [Multi-Item Constrained & Stochastic](https://www.google.com/search?q=%23multi-item-constrained--stochastic)
+* Inventory Optimization (News Vendor Framework)
+* Key Features
+* Project Structure
+* Probabilistic Demand Forecasting
+* The Basic Single-Item Problem
+* Multi-Item Constrained & Stochastic
 
+## Installation
+### From GitHub (Recommended for users)
+You can install OptiStock directly from the source repository using pip. This will automatically install all necessary dependencies like PyMC, BART, and Scipy.
+```Bash
+pip install git+https://github.com/JohannBouwer/OptiStock.git
+```
+### For Development (Editable Mode)
+If you plan to modify the code or contribute to the project, clone the repository and install it in "editable" mode. This ensures that changes you make to the source code are immediately reflected in your environment without needing a re-install.
 
+```Bash
+# Clone the repository
+git clone https://github.com/JohannBouwer/OptiStock.git
+cd OptiStock
+
+# Install in editable mode
+pip install -e .
+```
 
 ## Key Features
 
