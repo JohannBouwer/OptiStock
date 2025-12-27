@@ -259,17 +259,17 @@ class ScipyOptimizationSolver(Solver):
 
 class StochasticMonteCarloSolver(Solver):
     """
-    Stochastic solver accounting for full yield and demand distributions.
+    Stochastic solver that accounts for full yield and demand distributions.
 
     Risk is assessed using either Exponential Utility (default) or CVaR 
-    (Conditional Value at Risk). The objective function is penalized 
-    based on the `risk_aversion` parameter (0 to 1).
+    (Conditional Value at Risk). The solver uses the `SampledDemand` samples 
+    directly to preserve the integrity of the Bayesian posterior.
 
     Methods:
-    - Utility: Minimizes the expected exponential utility, effectively 
-      optimizing for risk-adjusted profit.
-    - CVAR: Optimizes a weighted sum of mean profit and the worst alpha% 
-      outcomes (Conditional Value at Risk).
+    - 'Utility': Optimizes risk-adjusted profit using an exponential utility function. 
+      This is the default method.
+    - 'CVAR': Minimizes the Conditional Value at Risk, focusing on the average of the 
+      worst alpha% of outcomes.
     """
 
     def __init__(
@@ -280,7 +280,15 @@ class StochasticMonteCarloSolver(Solver):
     ):
         self.problems = problems
         self.limits = limits
-        self.n_samples = n_samples
+        
+        # Determine n_samples based on the first sampled distribution found
+        # to avoid unnecessary resampling of Bayesian posteriors.
+        first_dist = self.problems[0][1]
+        if hasattr(first_dist, "samples"):
+            self.n_samples = len(first_dist.samples)
+        else:
+            self.n_samples = n_samples
+
         self.lambdas = {}
 
         # Pre-generate samples for Common Random Numbers (CRN)
@@ -290,17 +298,20 @@ class StochasticMonteCarloSolver(Solver):
         for item, demand_dist in self.problems:
             # 1. Prepare Demand Samples
             if hasattr(demand_dist, "samples"):
-                # Resample or tile to match n_samples if needed
-                d_samp = np.random.choice(demand_dist.samples, n_samples)
+                # Use samples directly if the count matches the solver's n_samples
+                if len(demand_dist.samples) == self.n_samples:
+                    d_samp = demand_dist.samples
+                else:
+                    # Only resample if there is a mismatch across items
+                    d_samp = np.random.choice(demand_dist.samples, self.n_samples)
             else:
                 # Generate from analytical distribution (Normal)
-                d_samp = np.random.normal(demand_dist.mean, demand_dist.std, n_samples)
+                d_samp = np.random.normal(demand_dist.mean, demand_dist.std, self.n_samples)
                 d_samp = np.maximum(0, d_samp)  # Clamp negative demand
             self._demand_samples_matrix.append(d_samp)
 
             # 2. Prepare Yield Samples
-            # Item.yield_distribution is now populated (defaults to PerfectYield)
-            y_samp = item.yield_distribution.sample(n_samples)
+            y_samp = item.yield_distribution.sample(self.n_samples)
             self._yield_samples_matrix.append(y_samp)
 
         self._demand_samples_matrix = np.array(self._demand_samples_matrix)
