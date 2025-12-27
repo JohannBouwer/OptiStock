@@ -3,7 +3,7 @@
 
 # Inventory Optimization (News Vendor Framework)
 
-A Python framework for solving inventory optimization problems. This library goes beyond the standard "Order the Mean" approach, offering tools for constrained, stochastic, and risk-aware decision-making in supply chains.
+A Python framework for solving inventory optimization problems. This library goes beyond the standard "Order the Mean" approach, offering tools for constrained, stochastic, and risk-aware decision-making in stock supply allocation. 
 
 * [Inventory Optimization (News Vendor Framework)](https://www.google.com/search?q=%23inventory-optimization-news-vendor-framework)
 * [Key Features](https://www.google.com/search?q=%23key-features)
