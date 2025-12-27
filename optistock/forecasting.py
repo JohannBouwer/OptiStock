@@ -358,7 +358,7 @@ class BARTBayesTimeSeries(BaseForecaster):
         dates = pd.to_datetime(df[date_col])
         X = np.column_stack(
             [
-                np.arange(len(df)),  # Trend (time index)
+                np.arange(len(df)) / self.len_df,  # Trend (time index)
                 dates.dt.dayofweek.values,  # Weekly seasonality
                 dates.dt.dayofyear.values,  # Yearly seasonality
                 dates.dt.day.values,  # type: ignore # Monthly seasonality
