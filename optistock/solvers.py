@@ -3,6 +3,7 @@ from .items import Item
 from abc import ABC, abstractmethod
 import math
 import numpy as np
+from scipy.stats import norm
 from scipy.optimize import minimize, LinearConstraint
 
 
@@ -219,33 +220,27 @@ class ScipyOptimizationSolver(Solver):
         for i, q in enumerate(quantities):
             item, demand = self.problems[i]
 
-            # Smooth approximation for gradient descent
-            if hasattr(demand, "mean"):
+            if hasattr(demand, "samples"):
+                # Full Bayesian/Sampled logic: captures non-normal tail risks
+                # directly from the posterior predictive distribution
+                exp_sales = np.mean(np.minimum(q, demand.samples))
+                exp_leftover = np.mean(np.maximum(0, q - demand.samples))
+            else:
+                # Analytical Normal Loss Function for smooth gradients
                 mu, sigma = demand.mean, demand.std
-            else:
-                mu = np.mean(demand.samples)
-                sigma = np.std(demand.samples)
+                if sigma > 0:
+                    z = (q - mu) / sigma
+                    # Standard Normal Loss Function: L(z) = phi(z) - z(1 - Phi(z))
+                    pdf_z = norm.pdf(z)
+                    cdf_z = norm.cdf(z)
+                    L_z = pdf_z - z * (1 - cdf_z)
 
-            # Analytical Normal Loss Function for smooth gradients
-            if sigma > 0:
-                # standard deviation q is from mean of demand
-                z = (q - mu) / sigma
-
-                # likelihood that demand will be Order Quantity.
-                pdf = demand.get_pdf(q)
-
-                # probability that Demand is less than Order Quantity
-                cdf = demand.get_cdf(q)
-
-                # The expected amount of demand that will not be met (shortage normalised)
-                L_z = pdf - z * (1 - cdf)
-
-                exp_shortage = sigma * L_z  # expected shortage
-                exp_sales = mu - exp_shortage  # actual sales (demand - shortage)
-                exp_leftover = q - exp_sales  # actual left over (ordered - left over)
-            else:
-                exp_sales = min(q, mu)
-                exp_leftover = max(0, q - mu)
+                    exp_shortage = sigma * L_z
+                    exp_sales = mu - exp_shortage
+                    exp_leftover = q - exp_sales
+                else:
+                    exp_sales = min(q, mu)
+                    exp_leftover = max(0, q - mu)
 
             profit = (
                 (exp_sales * item.selling_price)
