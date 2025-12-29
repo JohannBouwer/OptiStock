@@ -498,6 +498,114 @@ class BARTBayesTimeSeries(BaseForecaster):
         )
 
         return demands.sum(dim=("time")) * self.max_scaler
+    
+class HSGPBayesTimeSeries(BaseForecaster):
+    """
+    Forecaster using Hilbert Space Gaussian Process (HSGP) approximation.
+    Effective for capturing smooth, non-linear trends with high efficiency.
+    
+    Not fully tested, but worked for small problems
+    """
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        target_col: str = "sales",
+        m: int = 20,
+        L: float = 1.5
+    ) -> None:
+        self.data = data
+        self.target_col = target_col
+        self.m = m # Number of basis functions
+        self.L = L # Boundary factor
+        self.model = None
+        self.idata = None
+        self.forecast_idata = None
+
+    def fit(self, target: str = "sales", date_col: str = "date", samples=1000, chain=4):
+        df = self.data.copy()
+        df[date_col] = pd.to_datetime(df[date_col])
+        
+        # Scaling
+        self.max_scaler = df[target].max()
+        y_scaled = df[target].div(self.max_scaler).values
+        
+        # Time index scaled to [0, 1] for GP stability
+        t = np.arange(len(df))
+        self.t_train_max = t.max()
+        t_scaled = t / self.t_train_max
+        
+        model_coords = {"time": df[date_col]}
+
+        with pm.Model(coords=model_coords) as self.model:
+            t_shared = pm.Data("t", t_scaled[:, None], dims=("time", "feature"))
+            y_obs = pm.Data("y_obs", y_scaled, dims="time")
+
+            # HSGP Hyperparameters
+            ell = pm.InverseGamma("ell", mu=0.5, sigma=0.2) # Lengthscale
+            eta = pm.Exponential("eta", lam=1.0)           # Amplitude
+            
+            # Covariance and HSGP Prior
+            cov_func = eta**2 * pm.gp.cov.ExpQuad(1, ls=ell)
+            gp = pm.gp.HSGP(m=[self.m], L=[self.L], cov_func=cov_func)
+            phi = gp.prior("phi", X=t_shared, dims="time")
+            
+            intercept = pm.Normal("intercept", mu=y_scaled.mean(), sigma=0.5)
+            mu = pm.Deterministic("mu", intercept + phi, dims="time")
+            
+            sigma = pm.HalfNormal("sigma", sigma=0.1)
+            pm.Normal("y", mu=mu, sigma=sigma, observed=y_obs, dims="time")
+
+            self.idata = pm.sample(samples, chains=chain, sampler="numpyro")
+            return self.idata
+
+    def predict(self, df_future: pd.DataFrame, date_col: str = "date"):
+        n_train = len(self.data)
+        n_forecast = len(df_future)
+        
+        # Continue the scaled time index
+        t_future = np.arange(n_train, n_train + n_forecast) / self.t_train_max
+        
+        with self.model:
+            pm.set_data(
+                {"t": t_future[:, None]},
+                coords={"time": df_future[date_col]}
+            )
+            self.forecast_idata = pm.sample_posterior_predictive(
+                self.idata, predictions=True
+            )
+        return self.forecast_idata
+
+    def plot_forecast(self):
+        """Standard forecast plot with HDI."""
+        if self.forecast_idata is None:
+            raise RuntimeError("Call .predict() first.")
+            
+        dates = self.forecast_idata.predictions.time
+        y_samples = self.forecast_idata.predictions["y"]
+        
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.plot(dates, y_samples.mean(dim=["chain", "draw"]), label="HSGP Mean")
+        az.plot_hdi(dates, y_samples, hdi_prob=0.94, ax=ax, fill_kwargs={"alpha": 0.3})
+        ax.set_title("HSGP Time Series Forecast")
+        return fig, ax
+
+    def plot_components(self):
+        """Visualizes the Intercept vs the GP Trend (phi)."""
+        post = self.idata.posterior
+        fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+        
+        for i, comp in enumerate(["intercept", "phi"]):
+            mean = post[comp].mean(dim=["chain", "draw"])
+            axes[i].plot(post.time, mean, label=comp)
+            axes[i].set_title(f"Component: {comp}")
+            
+        return fig, axes
+
+    def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
+        if self.forecast_idata is None:
+            raise RuntimeError("Call .predict() first.")
+        demands = self.forecast_idata.predictions.y.sel(time=slice(start_date, end_date))
+        return demands.sum(dim="time") * self.max_scaler
 
 
 class ErrorEstimations:
