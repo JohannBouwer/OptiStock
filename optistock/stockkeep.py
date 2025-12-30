@@ -5,7 +5,7 @@ from .forecasting import BaseForecaster, BayesTimeSeries
 from .items import Item
 from .distributions.demand_distributions import SampledDemand
 from .solvers import Solver, SingleItemSolver
-from .distributions.yield_distributions import PerfectYield
+from .distributions.yield_distributions import YieldDistribution, PerfectYield
 
 """
 Orchestrator class that ties the different steps together:
@@ -18,6 +18,7 @@ class StockKeep:
         histories: pd.DataFrame,
         item_configs: pd.DataFrame,
         forecaster_class: Type[BaseForecaster] = BayesTimeSeries,
+        yield_profiles: Dict[str, YieldDistribution] | None = None,
         date_col: str = "date"
     ):
         self.raw_histories = histories
@@ -26,9 +27,10 @@ class StockKeep:
         self.date_col = date_col
         self.results = {}
         
-        self.items = self._create_items()
+        self.items = self._create_items(yield_profiles)
+      
         
-    def _create_items(self) -> List[Item]:
+    def _create_items(self, yields) -> List[Item]:
         items = []
         # Define the set of core attributes for the Item class
         core_cols = {'name', 'cost_price', 'selling_price', 'salvage_value', 'yield_distribution'}
@@ -39,7 +41,7 @@ class StockKeep:
             cp = row['cost_price']
             sp = row['selling_price']
             sv = row.get('salvage_value', 0.0)
-            yd = row.get('yield_distribution', PerfectYield)
+            yd = yields.get(name, PerfectYield())
             
             # Map any remaining columns (e.g., 'storage', 'weight') to the constraints dict
             constraints = {
@@ -128,10 +130,10 @@ class StockKeep:
             portfolio_problems.append((item_obj, demand_dist))
             holdout_actuals.append((item_obj, holdout[target].sum()))
 
-        allocation = self._supply_opt(portfolio_problems, solver_class, solver_params)
-        performance = self._calculate_metrics(allocation, holdout_actuals)
+        self.allocation = self._supply_opt(portfolio_problems, solver_class, solver_params)
+        self.performance = self._calculate_metrics(self.allocation, holdout_actuals)
         
-        return {"allocation": allocation, "metrics": performance, "period": (start_dt, end_dt)}
+        return {"allocation": self.allocation, "metrics": self.performance, "period": (start_dt, end_dt)}
 
     def _calculate_metrics(self, allocation: Dict[str, int], actuals: List[Tuple[Item, float]]) -> Dict[str, Any]:
         """Calculates financial and operational KPIs based on actual hold-out demand."""
