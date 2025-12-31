@@ -1,16 +1,18 @@
 
 ---
 
-# Inventory Optimization (News Vendor Framework)
+# OptiStock: Inventory Optimization with the News Vendor Framework
 
 A Python framework for solving inventory optimization problems. This library goes beyond the standard "Order the Mean" approach, offering tools for constrained, stochastic, and risk-aware decision-making in stock supply allocation. 
 
-* Inventory Optimization (News Vendor Framework)
-* Key Features
-* Project Structure
-* Probabilistic Demand Forecasting
-* The Basic Single-Item Problem
-* Multi-Item Constrained & Stochastic
+## Table of Contents
+
+1. [Installation](#installation)
+2. [Key Features](#key-features)
+3. [Project Structure](#project-structure)
+4. [Probabilistic Forecasting](#probabilistic-forecasting)
+5. [The StockKeep Orchestrator](#the-stockkeep-orchestrator)
+---
 
 ## Installation
 ### From GitHub (Recommended for users)
@@ -32,21 +34,24 @@ pip install -e .
 
 ## Key Features
 
-* **Probabilistic Forecasting**: Implements Bayesian Time Series (PyMC) and Bayesian Additive Regression Trees (BART) to generate full demand distributions.
-* **Beyond the Mean**: Uses the Newsvendor Model (Critical Fractile) to find optimal order quantities based on margin and volatility.
-* **Constrained Optimization**: Solves multi-item portfolios with budget and storage constraints using Greedy ROI or Scipy Trust-Region methods.
-* **Risk Aversion**: Optimizes for Conditional Value at Risk (CVaR) or Exponential Utility to penalize tail risks.
+* **Bayesian Forecasting**: Implements Fourier-based Time Series, Hybrid BART (with linear trend), and Hilbert Space Gaussian Processes (HSGP).
+* **End-to-End Orchestration**: The `StockKeep` class manages the entire pipeline from data preparation to hold-out validation.
+* **Stochastic Yield Modeling**: Accounts for supply-chain unreliability using Beta and Discrete yield distributions.
+* **Risk-Aware Solvers**: Optimizes for Expected Profit, Exponential Utility (default), or CVaR to protect against tail-risk stockouts.
+
+---
 
 ## Project Structure
 
-* **`forecasting.py`**: Bayesian models for time series demand forecasting.
-* **`items.py`**: Definitions for `Item` costs, critical fractiles, and constraints.
-* **`solvers.py`**: Optimization engines (Single-Item, Multi-Item Greedy, Scipy, and Stochastic MC).
-* **`distributions/`**: Models for demand and supply (yield) uncertainty.
+* `optistock/stockkeep.py`: The main orchestrator for running multi-item simulations and hold-out tests.
+* `optistock/forecasting.py`: Bayesian models (`BayesTimeSeries`, `BARTBayesTimeSeries`, `HSGPBayesTimeSeries`).
+* `optistock/solvers.py`: Optimization engines including Scipy Trust-Region and Monte Carlo solvers.
+* `optistock/distributions/`: Probabilistic models for demand and manufacturing yield.
+* `optistock/plot_suite/`: Visualization tools for forecast validation and profit curves.
 
 ## Probabilistic Demand Forecasting
 
-Generate full posterior predictive distributions instead of single-point estimates.
+Generate full posterior predictive distributions instead of single-point estimates using typical bayes models.
 
 ### Fourier & Event-based Forecasting
 
@@ -125,3 +130,26 @@ solver = StochasticMonteCarloSolver(problems=[(risky_chip, demand_dist)],
 allocation = solver.solve(method="CVAR", risk_aversion=0.5)
 
 ```
+
+## The StockKeep Orchestrator
+The `StockKeep` class is the primary entry point for simulating real-world performance. It automatically splits data into training and hold-out sets to validate how much profit your stock levels would have generated.
+
+```Python
+from optistock.stockkeep import StockKeep
+from optistock.solvers import StochasticMonteCarloSolver
+
+# Initialize with long-form history and item configs
+sk = StockKeep(df_history, df_items, yield_profiles=yield_map)
+
+# Run a 30-day hold-out simulation
+results = sk.run_simulation(
+    forecast_days=30,
+    solver_class=StochasticMonteCarloSolver,
+    solver_params={'limits': {'storage': 500}}
+)
+
+# Visualize forecast vs. actual sales
+sk.plot_forecast("Tablet Air")
+```
+---
+
