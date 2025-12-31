@@ -1,6 +1,7 @@
 from typing import Optional, Type, Dict, Any, List, Tuple
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from .forecasting import BaseForecaster, BayesTimeSeries
 from .items import Item
 from .distributions.demand_distributions import SampledDemand
@@ -28,6 +29,9 @@ class StockKeep:
         self.results = {}
         
         self.items = self._create_items(yield_profiles)
+        
+        self.trained_models = {}
+        self.holdout_data = {}
       
         
     def _create_items(self, yields) -> List[Item]:
@@ -97,44 +101,14 @@ class StockKeep:
         forecaster.predict(df_future, date_col=self.date_col)
         
         samples = forecaster.get_demand_distribution(str(start_dt.date()), str(end_dt.date()))
-        return SampledDemand(samples.y)
+        data_values = samples.y.values if hasattr(samples, 'y') else samples.values
+        return SampledDemand(data_values)
     
     def _supply_opt(self, problems: List[Tuple[Item, SampledDemand]], solver_class: Type[Solver], params: Dict) -> Dict[str, int]:
         """Solve the stochastic optimization problem across the portfolio."""
         solver = solver_class(problems, **params)
         return solver.solve()
-
-    def run_simulation(
-        self, 
-        forecast_days: int, 
-        target: str = "sales",
-        solver_class: Type[Solver] = SingleItemSolver,
-        solver_params: Dict[str, Any] = {},
-        events_list: Optional[List[Dict]] = None
-    ) -> Dict[str, Any]:
-        portfolio_problems = []
-        holdout_actuals = []
-
-        for i, item_obj in enumerate(self.items):
-            df_item_total = self.raw_histories[self.raw_histories['item'] == item_obj.name].copy()
-        
-            if df_item_total.empty:
-                print(f"Warning: No history found for {item_obj.name}")
-                continue
-
-            # Execute Pipeline Stages
-            train, holdout, start_dt, end_dt = self._date_prep(df_item_total, forecast_days)
-            model = self._model_train(train, target, events_list[i] if events_list else None)
-            demand_dist = self._forecast(model, start_dt, end_dt)
-            
-            portfolio_problems.append((item_obj, demand_dist))
-            holdout_actuals.append((item_obj, holdout[target].sum()))
-
-        self.allocation = self._supply_opt(portfolio_problems, solver_class, solver_params)
-        self.performance = self._calculate_metrics(self.allocation, holdout_actuals)
-        
-        return {"allocation": self.allocation, "metrics": self.performance, "period": (start_dt, end_dt)}
-
+    
     def _calculate_metrics(self, allocation: Dict[str, int], actuals: List[Tuple[Item, float]]) -> Dict[str, Any]:
         """Calculates financial and operational KPIs based on actual hold-out demand."""
         report = {}
@@ -164,3 +138,65 @@ class StockKeep:
 
         report["portfolio_total_profit"] = round(total_profit, 2)
         return report
+
+    def run_simulation(
+        self, 
+        forecast_days: int, 
+        target: str = "sales",
+        solver_class: Type[Solver] = SingleItemSolver,
+        solver_params: Dict[str, Any] = {},
+        events_list: Optional[List[Dict]] = None
+    ) -> Dict[str, Any]:
+        portfolio_problems = []
+        holdout_actuals = []
+
+        for i, item_obj in enumerate(self.items):
+            df_item_total = self.raw_histories[self.raw_histories['item'] == item_obj.name].copy()
+        
+            if df_item_total.empty:
+                print(f"Warning: No history found for {item_obj.name}")
+                continue
+
+            # Execute Pipeline Stages
+            train, holdout, start_dt, end_dt = self._date_prep(df_item_total, forecast_days)
+            model = self._model_train(train, target, events_list[i] if events_list else None)
+            demand_dist = self._forecast(model, start_dt, end_dt)
+            
+            self.trained_models[item_obj.name] = model
+            self.holdout_data[item_obj.name] = (holdout, target)
+            
+            portfolio_problems.append((item_obj, demand_dist))
+            holdout_actuals.append((item_obj, holdout[target].sum()))
+
+        self.allocation = self._supply_opt(portfolio_problems, solver_class, solver_params)
+        self.performance = self._calculate_metrics(self.allocation, holdout_actuals)
+        
+        return {"allocation": self.allocation, "metrics": self.performance, "period": (start_dt, end_dt)}
+    
+    def plot_forecast(self, item_name: str) -> Tuple[plt.Figure, plt.Axes]:
+        """
+        Visualizes the forecast HDI alongside actual sales for the holdout period.
+        """
+        if item_name not in self.trained_models:
+            raise ValueError(f"No trained model found for {item_name}. Run simulation first.")
+
+        model = self.trained_models[item_name]
+        holdout, target = self.holdout_data[item_name]
+        
+        fig, ax = model.plot_forecast()
+        # Scale actual sales to match the model's scaled units
+        actual_scaled = holdout[target] / model.max_scaler
+        # Overlay actuals
+        ax.scatter(
+            holdout[self.date_col], 
+            actual_scaled, 
+            color="black", 
+            marker="x", 
+            label="Actual Sales (Holdout)", 
+            s=25, 
+            zorder=5
+        )
+
+        ax.set_title(f"Forecast Validation: {item_name}")
+        ax.legend(loc="upper left")
+        return fig, ax
