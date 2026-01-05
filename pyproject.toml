@@ -7,7 +7,6 @@ requires-python = ">=3.12,<3.13"
 authors = [
   { name="Johann Mynhardt Bouwer", email="bouwer2608@gmail.com" },
 ]
-package = true
 dependencies = [
     "arviz>=0.23.0",
     "ipywidgets>=8.1.8",
@@ -25,5 +24,12 @@ dependencies = [
     "xarray>=2025.12.0",
 ]
 
+[tool.uv]
+package = true
+
 [project.urls]
 "Homepage" = "https://github.com/JohannBouwer/OptiStock"
+
+[build-system]
+requires = ["uv_build>=0.9.21,<0.10.0"]
+build-backend = "uv_build"
