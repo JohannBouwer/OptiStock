@@ -15,21 +15,49 @@ A Python framework for solving inventory optimization problems. This library goe
 ---
 
 ## Installation
-### From GitHub (Recommended for users)
-You can install OptiStock directly from the source repository using pip. This will automatically install all necessary dependencies like PyMC, BART, and Scipy.
-```Bash
+
+**Prerequisite:** Ensure you have [uv](https://docs.astral.sh/uv/getting-started/installation/) installed.
+
+### From GitHub (For Users)
+You can install OptiStock directly into your current virtual environment using `pip`. This will automatically install all necessary dependencies like PyMC, BART, and Scipy.
+
+```bash
 pip install git+https://github.com/JohannBouwer/OptiStock.git
 ```
-### For Development (Editable Mode)
-If you plan to modify the code or contribute to the project, clone the repository and install it in "editable" mode. This ensures that changes you make to the source code are immediately reflected in your environment without needing a re-install.
 
-```Bash
+> Note: If you are already managing your own project with `uv`, you can simply run `uv add git+https://github.com/JohannBouwer/OptiStock.git` to add it to your dependency tree.
+
+### For Development (Editable Mode)
+
+If you plan to modify the code or contribute to the project, use `uv` to synchronise
+ the environment. This command automatically creates a `.venv`, resolves the lockfile, and installs the package in "editable" mode so your changes appear instantly.
+
+```bash
 # Clone the repository
+# HTTPS:
 git clone https://github.com/JohannBouwer/OptiStock.git
+# SSH:
+git clone git@github.com:JohannBouwer/OptiStock.git
+
+# move into the directory 
 cd OptiStock
 
-# Install in editable mode
-pip install -e .
+# Create environment and install dependencies (including editable project)
+uv sync
+
+# Activate the environment
+# Windows:
+.venv\Scripts\activate
+# macOS/Linux:
+source .venv/bin/activate
+```
+
+### Quick Verification
+
+After installation, you can verify everything is working by running the installed package:
+
+```bash
+uv run python -c "import optistock"
 ```
 
 ## Key Features
