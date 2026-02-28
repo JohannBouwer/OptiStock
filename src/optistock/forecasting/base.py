@@ -17,7 +17,7 @@ class BaseForecaster(ABC):
         pass
 
     @abstractmethod
-    def predict(self, df_future: pd.DataFrame) -> az.InferenceData:
+    def forecast(self, df_future: pd.DataFrame) -> az.InferenceData:
         """
         Generate posterior predictive distributions for the future period.
         """
