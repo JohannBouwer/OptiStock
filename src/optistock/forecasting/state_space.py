@@ -1,16 +1,21 @@
 """Module for bayes state space models. Focused on modelling parameters that vary with time"""
 
+import arviz as az
 from arviz import InferenceData
 from pymc_extras.statespace import structural as st
+import matplotlib.pyplot as plt
 import pymc as pm
 import numpy as np
 import pandas as pd
 import pytensor.tensor as pt
+import xarray as xr
 
 from typing import Optional
 
+from .base import BaseForecaster
 
-class UnivariateSSM:
+
+class UnivariateSSM(BaseForecaster):
     """
     Flexible univariate Bayesian structural time series model via state space.
 
@@ -54,6 +59,8 @@ class UnivariateSSM:
         self.model = None
         self.ssm = None
         self.idata = None
+        self.post_idata = None
+        self.component_idata = None
 
     def build_model(
         self,
@@ -243,156 +250,196 @@ class UnivariateSSM:
         InferenceData
             ArviZ InferenceData object with ``forecast_observed`` variable.
         """
-        return self.ssm.forecast(
+
+        self.forecast_idata = self.ssm.forecast(
             self.idata,
             start=self.data.index[-1],
             periods=periods,
             scenario=scenario,
         )
+        return self.forecast_idata
 
-
-class BayesStateSpace:
-    def __init__(
-        self,
-        data: pd.DataFrame,
-        target_col: str,
-        time_varying_cols: Optional[list[str]] = None,
-    ):
-        self.data = data.copy()
-        self.target = target_col
-        self.y = self.data[[self.target]].values
-
-        # Identify regressors (all columns except target)
-        self.regressors = [c for c in self.data.columns if c != self.target]
-        self.time_varying_cols = time_varying_cols or []
-
-        self.model = None
-        self.idata = None
-
-    def build_model(
-        self,
-        trend_order: int = 2,
-        innovations_order: int | list[int] = [0, 1],
-        seasonal_periods=None,
-    ) -> None:
+    def plot_fit(self) -> tuple:
         """
-        Build the SSM model.
+        Plot the in-sample smoothed posterior against the observed training data.
+
+        Requires ``smooth_and_filter()`` to have been called first.
+
+        Returns
+        -------
+        tuple
+            ``(fig, ax)`` — Matplotlib figure and axes objects.
         """
+        if self.post_idata is None:
+            self.smooth_and_filter()
 
-        # trend and growth component
-        self.model = st.LevelTrend(
-            order=trend_order, innovations_order=innovations_order
+        obs = self.post_idata.smoothed_posterior_observed.isel(observed_state=0)
+        obs_stacked = obs.stack(sample=["chain", "draw"])
+
+        mean = obs_stacked.mean(dim="sample").values
+        lower_95 = obs_stacked.quantile(0.025, dim="sample").values
+        upper_95 = obs_stacked.quantile(0.975, dim="sample").values
+        lower_50 = obs_stacked.quantile(0.25, dim="sample").values
+        upper_50 = obs_stacked.quantile(0.75, dim="sample").values
+
+        x = self.data.index
+
+        fig, ax = plt.subplots(figsize=(14, 4))
+        ax.plot(x, self.data[self.target].to_numpy(), color="k", lw=1, label="Observed")
+        ax.plot(x, mean, color="tab:blue", label="Smoothed Mean")
+        ax.fill_between(
+            x, lower_95, upper_95, color="tab:blue", alpha=0.15, label="95% HDI"
+        )
+        ax.fill_between(
+            x, lower_50, upper_50, color="tab:blue", alpha=0.35, label="50% HDI"
+        )
+        ax.set_title(f"{self.target} — In-sample Smoothed Posterior")
+        ax.legend()
+        fig.tight_layout()
+
+        return fig, ax
+
+    def plot_forecast(self) -> tuple:
+        """
+        Plot the forecasted smoothed posterior.
+
+        Requires ``forecast()`` to have been called first.
+
+        Returns
+        -------
+        tuple
+            ``(fig, ax)`` — Matplotlib figure and axes objects.
+        """
+        if self.forecast_idata is None:
+            raise ValueError("No forecast found. Please call `forecast()` first.")
+
+        obs = self.forecast_idata["forecast_observed"].isel(observed_state=0)
+        obs_stacked = obs.stack(sample=["chain", "draw"])
+
+        mean = obs_stacked.mean(dim="sample").values
+        lower_95 = obs_stacked.quantile(0.025, dim="sample").values
+        upper_95 = obs_stacked.quantile(0.975, dim="sample").values
+        lower_50 = obs_stacked.quantile(0.25, dim="sample").values
+        upper_50 = obs_stacked.quantile(0.75, dim="sample").values
+
+        x = self.forecast_idata["time"].values
+
+        fig, ax = plt.subplots(figsize=(14, 4))
+        ax.plot(x, mean, color="tab:blue", label="Smoothed Mean")
+        ax.fill_between(
+            x, lower_95, upper_95, color="tab:blue", alpha=0.15, label="95% HDI"
+        )
+        ax.fill_between(
+            x, lower_50, upper_50, color="tab:blue", alpha=0.35, label="50% HDI"
+        )
+        ax.set_title(f"{self.target} — In-sample Smoothed Posterior")
+        ax.legend()
+        fig.tight_layout()
+
+        return fig, ax
+
+    def plot_components(self) -> tuple:
+        """
+        Plot each latent state component from the Kalman smoother.
+
+        One subplot per state (e.g. level, slope, seasonal amplitudes, regression
+        coefficients). Requires ``smooth_and_filter()`` to have been called first.
+
+        Returns
+        -------
+        tuple
+            ``(fig, axes)`` — Matplotlib figure and array of axes.
+        """
+        if self.component_idata is None:
+            self.smooth_and_filter()
+
+        states = self.component_idata.coords["state"].values
+        component_hdi = az.hdi(self.component_idata, hdi_prob=0.95)
+        x = self.data.index
+
+        fig, axes = plt.subplots(len(states), 1, figsize=(14, 3 * len(states)))
+        if len(states) == 1:
+            axes = [axes]
+
+        for ax, state in zip(axes, states):
+            mean = (
+                self.component_idata.stack(sample=["chain", "draw"])[
+                    "smoothed_posterior"
+                ]
+                .sel(state=state)
+                .mean(dim="sample")
+                .values
+            )
+            hdi_vals = component_hdi.smoothed_posterior.sel(state=state).values
+
+            ax.plot(x, mean, color="tab:orange")
+            ax.fill_between(
+                x, hdi_vals[:, 0], hdi_vals[:, 1], color="tab:orange", alpha=0.2
+            )
+            ax.set_title(state.replace("_", " ").title())
+
+        fig.tight_layout()
+        return fig, np.asarray(axes)
+
+    def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
+        """
+        Return the posterior distribution of total demand over a date window.
+
+        Sums the smoothed posterior observed across all time steps in
+        ``[start_date, end_date]``, yielding a full (chain × draw) distribution
+        of total demand for that period.
+
+        Requires ``forecast()`` to have been called first.
+
+        Parameters
+        ----------
+        start_date : str
+            Inclusive start of the window (any format accepted by pandas).
+        end_date : str
+            Inclusive end of the window (any format accepted by pandas).
+
+        Returns
+        -------
+        xr.Dataset
+            Dataset with a single ``"demand"`` variable of shape
+            ``(chain, draw)`` representing the total demand distribution.
+        """
+        if self.forecast_idata is None:
+            raise ValueError("No forecast found. Please call `forecast()` first.")
+
+        mask = (self.forecast_idata["time"] >= pd.to_datetime(start_date)) & (  # type: ignore
+            self.forecast_idata["time"] <= pd.to_datetime(end_date)
+        )  # type: ignore
+        time_indices = np.where(mask)[0]
+
+        total = (
+            self.forecast_idata["forecast_observed"]
+            .isel(observed_state=0, time=time_indices)
+            .sum(dim="time")
         )
 
-        # time-varying regressors
-        if self.time_varying_cols:
+        return total.to_dataset(name="demand")
 
-            self.model += st.Regression(
-                name="time_varying_exog",
-                state_names=self.time_varying_cols,
-                innovations=True,
-            )
 
-        # time-invariant regressors
-        self.model += st.Regression(
-            name="constant_exog",
-            state_names=[c for c in self.regressors if c not in self.time_varying_cols],
-        )
+# TODO: Multivariate model with shared components (e.g. common trend) and cross-series regression effects
 
-        # noise / measurement error
-        self.model += st.MeasurementError()
 
-        # seasonal component
-        if seasonal_periods is not None:
-            self.model += st.FrequencySeasonality(
-                name="season", season_length=seasonal_periods
-            )
+class MultivariateSSM(BaseForecaster):
+    """
+    Placeholder for future multivariate SSM implementation.
+    """
 
-        self.ssm = self.model.build(name="SSM", mode="JAX")
+    def fit(self, target: str, date_col: str) -> InferenceData:
+        pass
 
-    def _get_model_coords(self):
+    def forecast(self, df_future: pd.DataFrame) -> InferenceData:
+        pass
 
-        self.dims = self.model.param_dims.values()
-        self.coords = self.model.coords
+    def plot_forecast(self) -> tuple:
+        pass
 
-    def fit(self, sampler_kwargs) -> None:
-        """Fit/Sample the model"""
-        self._get_model_coords()
-        with pm.Model(coords=self.ssm.coords):
+    def plot_components(self) -> tuple:
+        pass
 
-            # SET PRIORS
-            P0_diag = pm.Gamma("P0_diag", alpha=50, beta=1)
-            P0 = pm.Deterministic(  # noqa: F841
-                "P0", pt.eye(self.model.k_states) * P0_diag, dims=("state", "state_aux")
-            )
-            # Trend and level
-            initial_level_trend = pm.Normal(  # noqa: F841
-                "initial_level_trend", dims=("state_level_trend",)
-            )
-            # Trend and level innovations
-            sigma_level_trend = pm.Gamma(  # noqa: F841
-                "sigma_level_trend", alpha=2, beta=1, dims=("shock_level_trend",)
-            )
-            # Time varying regressors data
-            data_time_varying_exog = pm.Data(  # noqa: F841
-                "data_time_varying_exog",
-                self.data[self.regressors].values,
-                dims=("time", "state_time_varying_exog"),
-            )
-            # Time varying regressors coefficients
-            beta_time_varying_exog = pm.HalfNormal(  # noqa: F841
-                "beta_time_varying_exog",
-                sigma=3,
-                dims=("state_time_varying_exog",),
-            )
-            # Time varying innovations
-            sigma_beta_time_varying_exog = pm.HalfNormal(  # noqa: F841
-                "sigma_beta_time_varying_exog",
-                sigma=3,
-                dims=("state_time_varying_exog",),
-            )
-            # Time invariant regressors data
-            data_constant_exog = pm.Data(  # noqa: F841
-                "data_constant_exog",
-                self.data[
-                    [c for c in self.regressors if c not in self.time_varying_cols]
-                ].values,
-                dims=("time", "state_constant_exog"),
-            )
-            # Time invariant regressors coefficients
-            beta_constant_exog = pm.HalfNormal(  # noqa: F841
-                "beta_constant_exog",
-                sigma=3,
-                dims=("state_constant_exog",),
-            )
-            # Seasonality
-            params_season = pm.Normal(  # noqa: F841
-                "params_season", sigma=10, dims=("state_season",)
-            )
-            sigma_season = pm.Gamma("sigma_season", alpha=2, beta=1)  # noqa: F841
-
-            sigma_MeasurementError = pm.HalfNormal(  # noqa: F841
-                "sigma_MeasurementError", sigma=5
-            )  # noqa: F841
-
-            # BUILD MODEL GRAPH
-            self.ssm.build_statespace_graph(self.y, mode="JAX")
-
-            # SAMPLE MODEL
-            self.idata = pm.sample(nuts_sampler="nutpie")
-
-    def smooth_and_filter(self, method: str = "eigh") -> None:
-        """Smooth output and extract components"""
-        self.post_idata = self.ssm.sample_conditional_posterior(
-            self.idata, mvn_method=method
-        )
-
-        self.component_idata = self.ssm.extract_components_from_idata(self.post_idata)
-
-    def forecast(self, senarios: None) -> InferenceData:
-        """forecast with the model"""
-        forecast = self.ssm.forecast(
-            self.idata, start=self.data.index[-1], periods=10, senario=senarios
-        )
-
-        return forecast
+    def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
+        pass
