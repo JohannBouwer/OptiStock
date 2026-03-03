@@ -2,3 +2,5 @@
 *.pyc
 /inventory_management.egg-info
 .ipynb_checkpoints
+/.vscode
+/.vscode

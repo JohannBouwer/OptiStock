@@ -4,24 +4,28 @@ version = "0.1.0"
 description = "Stochastic Inventory Optimization Framework"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-authors = [
-  { name="Johann Mynhardt Bouwer", email="bouwer2608@gmail.com" },
-]
+authors = [{ name = "Johann Mynhardt Bouwer", email = "bouwer2608@gmail.com" }]
 dependencies = [
-    "arviz>=0.23.0",
-    "ipywidgets>=8.1.8",
-    "llvmlite>=0.46.0",
-    "matplotlib>=3.10.8",
-    "notebook>=7.5.1",
-    "numba>=0.63.1",
-    "numpy>=2.3.5",
-    "pymc>=5.27.0",
-    "pymc-bart>=0.11.0",
-    "scipy>=1.16.3",
-    "seaborn>=0.13.2",
-    "setuptools>=61.0",
-    "streamlit>=1.52.2",
-    "xarray>=2025.12.0",
+  "arviz>=0.23.0",
+  "ipywidgets>=8.1.8",
+  "llvmlite>=0.46.0",
+  "matplotlib>=3.10.8",
+  "notebook>=7.5.1",
+  "numba>=0.63.1",
+  "numpy>=2.3.5",
+  "pymc>=5.27.0",
+  "pymc-bart>=0.11.0",
+  "scipy>=1.16.3",
+  "seaborn>=0.13.2",
+  "setuptools>=61.0",
+  "streamlit>=1.52.2",
+  "xarray>=2025.12.0",
+  "pymc-extras>=0.8.0",
+  "numpyro>=0.20.0",
+  "jax>=0.9.0.1",
+  "jaxlib>=0.9.0.1",
+  "pymc-marketing>=0.18.0",
+  "nutpie>=0.10",
 ]
 
 [tool.uv]
