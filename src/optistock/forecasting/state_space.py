@@ -407,9 +407,10 @@ class UnivariateSSM(BaseForecaster):
         if self.forecast_idata is None:
             raise ValueError("No forecast found. Please call `forecast()` first.")
 
-        mask = (self.forecast_idata["time"] >= pd.to_datetime(start_date)) & (  # type: ignore
-            self.forecast_idata["time"] <= pd.to_datetime(end_date)
-        )  # type: ignore
+        time_values = self.forecast_idata["time"].values
+        mask = (time_values >= np.datetime64(start_date)) & (
+            time_values <= np.datetime64(end_date)
+        )
         time_indices = np.where(mask)[0]
 
         total = (

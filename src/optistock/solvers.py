@@ -1,443 +1,399 @@
-from .distributions.demand_distributions import DemandDistribution
-from .items import Item
+"""
+Stochastic inventory solvers backed by Bayesian demand forecasters.
+
+The ``ForecastSolver`` class accepts any fitted ``BaseForecaster`` and calls
+``get_demand_distribution(start_date, end_date)`` to obtain posterior predictive
+demand samples.  Stock levels are then optimised using one of three objectives:
+
+* **SAA** (Sample Average Approximation) — maximise ``E[profit]``.
+  Every posterior draw is treated as an equally-likely scenario.
+  Equivalent to the critical-fractile rule for a single item.
+
+* **CVaR** (Conditional Value at Risk) — maximise a weighted combination of
+  ``E[profit]`` and the mean profit in the worst-``α`` fraction of scenarios.
+  Use when downside protection is more important than the mean.
+
+* **Utility** (Exponential / CARA) — maximise ``E[U(profit)]`` where
+  ``U(x) = −exp(−x / ρ)``.  The risk-tolerance ``ρ`` controls curvature;
+  ``ρ → ∞`` recovers SAA and ``ρ → 0`` becomes worst-case averse.
+"""
+
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-import math
+from typing import Literal
+
 import numpy as np
-from scipy.stats import norm
-from scipy.optimize import minimize, LinearConstraint
+from scipy.optimize import LinearConstraint, minimize, minimize_scalar
+
+from .forecasting.base import BaseForecaster
+from .items import Item
+
+
+# ---------------------------------------------------------------------------
+# Abstract base
+# ---------------------------------------------------------------------------
 
 
 class Solver(ABC):
-    """
-    Abstract Base Class for all Newsvendor problem solvers.
-    """
+    """Abstract base class for all newsvendor solvers."""
 
     @abstractmethod
-    def solve(self) -> int | dict:
+    def solve(self, start_date: str, end_date: str) -> dict[str, int]:
         """
-        Executes the solver's logic to find the optimal solution.
+        Find optimal stock quantities for the planning horizon.
+
+        Parameters
+        ----------
+        start_date, end_date : str
+            Inclusive horizon passed to ``forecaster.get_demand_distribution``.
+
+        Returns
+        -------
+        dict[str, int]
+            Mapping of item name → optimal order quantity.
         """
-        pass
+
+    @abstractmethod
+    def get_profit(self, allocation: dict[str, int] | None = None) -> float:
+        """
+        Expected profit for *allocation* evaluated against stored demand samples.
+
+        Parameters
+        ----------
+        allocation : dict[str, int], optional
+            Item name → quantity.  Defaults to the solution found by ``solve``.
+        """
 
 
-class SingleItemSolver(Solver):
+# ---------------------------------------------------------------------------
+# Main solver
+# ---------------------------------------------------------------------------
+
+
+class ForecastSolver(Solver):
     """
-    Solves the classic (single-item) Newsvendor problem.
+    Newsvendor solver that draws demand samples from one or more
+    ``BaseForecaster`` instances.
 
-    Use Case: One item problem with no constraints
-    """
+    Handles both single-item and multi-item problems.  For multi-item problems,
+    each item is paired with its own (univariate) forecaster.  A single shared
+    forecaster can be passed for the future multivariate case — see the
+    ``demand_key`` parameter.
 
-    def __init__(self, item: Item, demand_distribution: DemandDistribution):
-        """
-        Initializes the single-item solver.
-
-        Args:
-            item (Item): The item to be stocked.
-            demand_distribution (DemandDistribution): The demand distribution for the item.
-        """
-        self.item = item
-        self.demand_distribution = demand_distribution
-
-    def solve(self) -> int:
-        """
-        Calculates the optimal order quantity (Q*).
-
-        The logic is:
-        1. Calculate the critical fractile (CF) from the item's costs.
-        2. Find the quantity Q such that P(Demand <= Q) = CF.
-           This is done by finding the quantile of the demand distribution
-           for the probability CF.
-        3. Since order quantities are discrete, we round up to the nearest integer.
-
-        Returns:
-            int: The optimal order quantity.
-        """
-        # Get critical fractile
-        fractile = self.item.critical_fractile
-
-        # Get quantile from demand distribution
-        optimal_q_float = self.demand_distribution.get_quantile(fractile)
-
-        # Round up to the nearest integer
-        # We round up because the cost function is convex and we want the
-        # smallest Q such that P(D <= Q) >= CF.
-        optimal_q_int = math.ceil(optimal_q_float)
-
-        # Ensure quantity is non-negative
-        self.quantity = max(0, optimal_q_int)
-        return self.quantity
-
-
-class MultiItemConstrainedSolver(Solver):
-    """
-    Solves the case for multiple items with a budget constraint using a "greedy" approach
-
-    Use Case: Multiple Items with one budget constraint. Best for small order quantities for few number of items.
-
-    - It calculates the Expected Marginal Profit of buying one more unit for every item.
-
-    - It divides that profit by the Cost of the item to get a "Return on Investment" (ROI) ratio.
-
-    - It selects the item with the highest ROI, "buys" it, updates the remaining budget, and repeats.
+    Parameters
+    ----------
+    problems : tuple[Item, BaseForecaster] or list[tuple[Item, BaseForecaster]]
+        A single ``(item, forecaster)`` pair or a list of such pairs.
+        Each forecaster must already be in a state where
+        ``get_demand_distribution`` can be called (i.e. ``smooth_and_filter``
+        or ``forecast`` has been run).
+    objective : {'SAA', 'CVaR', 'Utility'}
+        Objective function used during optimisation. Default ``'SAA'``.
+    limits : dict[str, float], optional
+        Shared resource constraints across all items, e.g.
+        ``{"budget": 50_000, "storage_m3": 200}``.
+        Each ``Item.constraints`` dict must contain the corresponding keys.
+    cvar_alpha : float
+        Tail fraction for CVaR — e.g. ``0.10`` captures the worst 10 % of
+        scenarios.  Only used when ``objective='CVaR'``.  Default ``0.10``.
+    cvar_lambda : float
+        Weight on the CVaR term: ``0`` → pure SAA, ``1`` → pure tail
+        minimisation.  Default ``0.50``.
+    risk_aversion : float
+        Dimensionless risk-aversion level in ``[0, 1)`` for exponential
+        utility.  ``0`` (default) is risk-neutral and recovers SAA; values
+        approaching ``1`` are maximally risk-averse.  Internally mapped to
+        the scale parameter ``ρ = σ_profit · (1 − r) / r``.
     """
 
     def __init__(
-        self, inventory_problems: list[tuple[Item, DemandDistribution]], budget: float
+        self,
+        problems: list[tuple[Item, BaseForecaster]] | tuple[Item, BaseForecaster],
+        objective: Literal["SAA", "CVaR", "Utility"] = "SAA",
+        limits: dict[str, float] | None = None,
+        cvar_alpha: float = 0.10,
+        cvar_lambda: float = 0.50,
+        risk_aversion: float = 0.0,
     ):
+        if not isinstance(problems, list):
+            problems = [problems]
+        self.problems = problems
+        self.objective = objective
+        self.limits = limits or {}
+        self.cvar_alpha = cvar_alpha
+        self.cvar_lambda = cvar_lambda
+        self.risk_aversion = risk_aversion
+
+        self.allocation: dict[str, int] | None = None
+        self.shadow_prices: dict[str, float] = {}
+
+        # Populated by solve()
+        self._demand_matrix: np.ndarray | None = None  # (n_items, n_samples)
+        self._yield_matrix: np.ndarray | None = None  # (n_items, n_samples)
+
+    def solve(self, start_date: str, end_date: str) -> dict[str, int]:
         """
-        inventory_problems (list[tuple[Item, DemandDistribution]]): list of (item, demand distribution) tuples
-        budget (float): Total inventory budget
+        Pull demand samples from each forecaster then optimise stock quantities.
+
+        The horizon ``[start_date, end_date]`` is forwarded directly to
+        ``forecaster.get_demand_distribution``, which should return the
+        *total* demand over that window per posterior draw.
+
+        Parameters
+        ----------
+        start_date, end_date : str
+            Planning horizon (any format accepted by pandas).
+
+        Returns
+        -------
+        dict[str, int]
+            Optimal quantities keyed by item name.
         """
-        self.problems = inventory_problems
-        self.budget = budget
+        self._demand_matrix = self._pull_demand(start_date, end_date)
+        n_samples = self._demand_matrix.shape[1]
+        n_items = len(self.problems)
 
-    def solve(self) -> dict[str, int]:
-        current_quantities = [0] * len(self.problems)
-        current_spend = 0.0
+        self._yield_matrix = np.array(
+            [item.yield_distribution.sample(n_samples) for item, _ in self.problems]
+        )
 
-        # Indices of items that are still viable candidates for purchase
-        active_indices = set(range(len(self.problems)))
+        if n_items == 1 and not self.limits:
+            quantities = self._solve_scalar()
+        else:
+            quantities = self._solve_vector()
 
-        while active_indices:
-            best_item_idx = -1
-            best_metric = -float("inf")
-            to_remove = set()
+        self.allocation = {
+            self.problems[i][0].name: int(max(0, quantities[i])) for i in range(n_items)
+        }
+        return self.allocation
 
-            for i in active_indices:
-                item, demand = self.problems[i]
-                current_q = current_quantities[i]
+    def get_profit(self, allocation: dict[str, int] | None = None) -> float:
+        """
+        Expected profit across all stored demand scenarios.
 
-                if current_spend + item.cost_price > self.budget:
-                    to_remove.add(i)
-                    continue
+        Parameters
+        ----------
+        allocation : dict[str, int], optional
+            If ``None``, uses the allocation found by the last ``solve`` call.
 
-                # Probability of selling the (current_q + 1)th unit
-                prob_sell_next = 1.0 - demand.get_cdf(current_q)
-                prob_unsold_next = 1.0 - prob_sell_next
+        Returns
+        -------
+        float
+            Mean profit over all posterior scenarios.
+        """
+        if self._demand_matrix is None:
+            raise RuntimeError("Call solve() before get_profit().")
+        allocation = allocation or self.allocation
+        if allocation is None:
+            raise RuntimeError("No allocation available.  Call solve() first.")
 
-                # Expected marginal profit of the next unit
-                mep = (prob_sell_next * item.underage_cost) - (
-                    prob_unsold_next * item.overage_cost
+        q = np.array(
+            [allocation.get(item.name, 0) for item, _ in self.problems],
+            dtype=float,
+        )
+        return float(np.mean(self._portfolio_profits(q)))
+
+    def summary(self) -> dict:
+        """
+        Diagnostic summary of the solution.
+
+        Returns
+        -------
+        dict with keys:
+
+        * ``allocation`` — optimal quantities
+        * ``expected_profit`` — mean profit across scenarios
+        * ``profit_std`` — standard deviation of profit
+        * ``cvar_{cvar_alpha}pct`` — CVaR at ``cvar_alpha``
+        * ``service_level`` — fraction of scenarios where all demand is met
+        * ``certainty_equivalent`` / ``risk_premium`` — only when
+          ``objective='Utility'`` with finite ``risk_aversion``
+        * ``shadow_prices`` — constraint duals (multi-item only)
+        """
+        if self.allocation is None or self._demand_matrix is None:
+            raise RuntimeError("Call solve() before summary().")
+
+        q = np.array(
+            [self.allocation[item.name] for item, _ in self.problems], dtype=float
+        )
+        profits = self._portfolio_profits(q)
+
+        n_tail = max(1, int(np.ceil(self.cvar_alpha * len(profits))))
+        cvar_val = float(np.mean(np.sort(profits)[:n_tail]))
+
+        Q_eff = q.reshape(-1, 1) * self._yield_matrix
+        service_level = float(np.mean(np.all(Q_eff >= self._demand_matrix, axis=0)))
+
+        result: dict = {
+            "allocation": self.allocation,
+            "expected_profit": float(np.mean(profits)),
+            "profit_std": float(np.std(profits)),
+            f"cvar_{int(self.cvar_alpha * 100)}pct": cvar_val,
+            "service_level": service_level,
+        }
+
+        if not np.isinf(self.risk_aversion):
+            eu = float(np.mean(np.exp(-profits / self.risk_aversion)))
+            ce = float(-self.risk_aversion * np.log(max(eu, 1e-300)))
+            result["certainty_equivalent"] = ce
+            result["risk_premium"] = float(np.mean(profits)) - ce
+
+        if self.shadow_prices:
+            result["shadow_prices"] = self.shadow_prices
+
+        return result
+
+    def _pull_demand(self, start_date: str, end_date: str) -> np.ndarray:
+        """
+        Call each forecaster's ``get_demand_distribution`` and return a
+        ``(n_items, n_samples)`` demand matrix.
+
+        When multiple forecasters return different numbers of samples,
+        the matrix is trimmed to the shortest sample vector.
+        """
+        rows = []
+        for _, forecaster in self.problems:
+            dataset = forecaster.get_demand_distribution(start_date, end_date)
+            samples = np.asarray(dataset["demand"].values, dtype=float).ravel()
+            rows.append(samples)
+
+        n_min = min(len(r) for r in rows)
+        return np.array([r[:n_min] for r in rows])
+
+    def _portfolio_profits(self, quantities: np.ndarray) -> np.ndarray:
+        """
+        Compute profit for each demand scenario.
+
+        Parameters
+        ----------
+        quantities : ndarray, shape (n_items,)
+
+        Returns
+        -------
+        ndarray, shape (n_samples,)
+            Total portfolio profit per scenario.
+        """
+        assert self._demand_matrix is not None and self._yield_matrix is not None
+        Q = quantities.reshape(-1, 1)
+        Q_eff = Q * self._yield_matrix  # effective supply
+        sales = np.minimum(Q_eff, self._demand_matrix)
+        leftover = Q_eff - sales
+
+        prices = np.array([i.selling_price for i, _ in self.problems]).reshape(-1, 1)
+        costs = np.array([i.cost_price for i, _ in self.problems]).reshape(-1, 1)
+        salvages = np.array([i.salvage_value for i, _ in self.problems]).reshape(-1, 1)
+
+        revenue = sales * prices
+        salvage_income = leftover * salvages
+        procurement = Q * costs
+
+        return np.sum(revenue + salvage_income - procurement, axis=0)
+
+    def _objective_fn(self, quantities: np.ndarray) -> float:
+        match self.objective:
+            case "SAA":
+                return self._saa(quantities)
+            case "CVaR":
+                return self._cvar(quantities)
+            case "Utility":
+                return self._utility(quantities)
+            case _:
+                raise ValueError(
+                    f"Unknown objective {self.objective!r}. "
+                    "Choose from 'SAA', 'CVaR', 'Utility'."
                 )
 
-                if mep <= 0:
-                    to_remove.add(i)
-                    continue
+    def _saa(self, quantities: np.ndarray) -> float:
+        """Negative expected profit (SAA minimises this)."""
+        return -float(np.mean(self._portfolio_profits(quantities)))
 
-                #  Marginal Profit per unit invested
-                metric = mep / item.cost_price
+    def _cvar(self, quantities: np.ndarray) -> float:
+        """
+        Negative weighted combination of expected profit and CVaR.
 
-                # Find the item with the best mep
-                if metric > best_metric:
-                    best_metric = metric
-                    best_item_idx = i
+        Objective = -[(1 - λ) · E[profit] + λ · CVaR_alpha[profit]]
+        """
+        profits = self._portfolio_profits(quantities)
+        expected = float(np.mean(profits))
+        n_tail = max(1, int(np.ceil(self.cvar_alpha * len(profits))))
+        cvar_val = float(np.mean(np.sort(profits)[:n_tail]))
+        return -((1 - self.cvar_lambda) * expected + self.cvar_lambda * cvar_val)
 
-            # remove items that are no longer profitable
-            active_indices -= to_remove
+    def _utility(self, quantities: np.ndarray) -> float:
+        """
+        Expected exponential disutility E[exp(−profit / ρ)].
 
-            # update item and current spend
-            if best_item_idx != -1:
-                current_quantities[best_item_idx] += 1
-                current_spend += self.problems[best_item_idx][0].cost_price
-            else:
-                break
+        Minimising this maximises E[U(profit)] where U(x) = −exp(−x / ρ).
+        ρ is derived from the dimensionless ``risk_aversion`` parameter r via
+        ρ = σ_profit · (1 − r) / r, so r = 0 recovers SAA and r → 1 is
+        maximally risk-averse.
+        """
+        profits = self._portfolio_profits(quantities)
+        r = self.risk_aversion
+        if r <= 0.0:
+            return -float(np.mean(profits))
+        sigma = float(np.std(profits))
+        if sigma < 1e-10:
+            return -float(np.mean(profits))
+        rho = sigma * (1.0 - r) / r
+        return float(np.mean(np.exp(-profits / rho)))
 
-        self.allocation = {
-            prob[0].name: q for prob, q in zip(self.problems, current_quantities)
-        }
-        return self.allocation
+    def _solve_scalar(self) -> np.ndarray:
+        """Single-item, unconstrained optimization via minimize_scalar."""
+        assert self._demand_matrix is not None
+        demand = self._demand_matrix[0]
+        upper = float(np.percentile(demand, 99.9)) * 2 + 1
 
+        result = minimize_scalar(
+            lambda q: self._objective_fn(np.array([q])),
+            bounds=(0.0, upper),
+            method="bounded",
+            options={"xatol": 0.5},
+        )
+        return np.array([max(0, round(float(result.x)))])
 
-class ScipyOptimizationSolver(Solver):
-    """
-    A trust-region solver that returns the lagrangian multipliers for each constraint.
-
-    TODO: At the moment only handles normal demand distributions.
-    """
-
-    def __init__(
-        self,
-        problems: list[tuple[Item, DemandDistribution]],
-        limits: dict[str, float],
-    ):
-        self.problems = problems
-        self.limits = limits
-        self.shadow_prices = {}
-
-    def solve(self) -> dict[str, int]:
+    def _solve_vector(self) -> np.ndarray:
+        """Multi-item (or constrained) optimization via trust-region method."""
+        assert self._demand_matrix is not None and self._yield_matrix is not None
         n_items = len(self.problems)
-        constraint_names = list(self.limits.keys())
 
-        # Build Constraint Matrix A (Rows=Constraints, Cols=Items)
-        A = np.zeros((len(constraint_names), n_items))
-        # upper bound of constraints
-        upper_bounds = np.array(list(self.limits.values()))
-        # lower bound of constraints
-        lower_bounds = np.array(
-            [-np.inf] * len(constraint_names)
-        )  # One-sided constraints <= limit
-
-        # set up constraints
-        for row_idx, name in enumerate(constraint_names):
-            for col_idx, (item, _) in enumerate(self.problems):
-                val = item.constraints.get(name, 0.0)
-                A[row_idx, col_idx] = val
-
-        linear_cons = LinearConstraint(A, lower_bounds, upper_bounds)
-
-        # Initial Guess & Bounds
-        x0 = np.array([d.mean for _, d in self.problems])
-        bounds = [(0, np.inf) for _ in range(n_items)]
-
-        # Solve
-        # Define a Hessian function that returns a zero matrix as the constraints are linear
-        def hess_zero(x):
-            return np.zeros((len(x), len(x)))
+        x0 = np.array(
+            [
+                np.median(self._demand_matrix[i])
+                / max(float(self._yield_matrix[i].mean()), 1e-6)
+                for i in range(n_items)
+            ]
+        )
+        bounds = [(0.0, None)] * n_items
+        constraints = [self._build_constraint()] if self.limits else []
 
         result = minimize(
-            fun=self._objective_function,
+            fun=self._objective_fn,
             x0=x0,
             method="trust-constr",
             bounds=bounds,
-            constraints=[linear_cons],
-            hess=hess_zero,
+            constraints=constraints,
+            hess=lambda _: np.zeros((n_items, n_items)),
         )
 
-        # Extract Lambdas
-        if result.v:
-            self.lambdas = {
-                name: float(abs(m)) for name, m in zip(constraint_names, result.v[0])
+        if getattr(result, "v", None):
+            names = list(self.limits.keys())
+            self.shadow_prices = {
+                name: float(abs(v)) for name, v in zip(names, result.v[0])
             }
 
-        final_quantities = np.floor(result.x).astype(int)
-        self.allocation = {
-            self.problems[i][0].name: q for i, q in enumerate(final_quantities)
-        }
-        return self.allocation
+        return np.floor(result.x).astype(int)
 
-    def _objective_function(self, quantities):
-        total_profit = 0.0
-        for i, q in enumerate(quantities):
-            item, demand = self.problems[i]
-
-            if hasattr(demand, "samples"):
-                # Full Bayesian/Sampled logic: captures non-normal tail risks
-                # directly from the posterior predictive distribution
-                exp_sales = np.mean(np.minimum(q, demand.samples))
-                exp_leftover = np.mean(np.maximum(0, q - demand.samples))
-            else:
-                # Analytical Normal Loss Function for smooth gradients
-                mu, sigma = demand.mean, demand.std
-                if sigma > 0:
-                    z = (q - mu) / sigma
-                    # Standard Normal Loss Function: L(z) = phi(z) - z(1 - Phi(z))
-                    pdf_z = norm.pdf(z)
-                    cdf_z = norm.cdf(z)
-                    L_z = pdf_z - z * (1 - cdf_z)
-
-                    exp_shortage = sigma * L_z
-                    exp_sales = mu - exp_shortage
-                    exp_leftover = q - exp_sales
-                else:
-                    exp_sales = min(q, mu)
-                    exp_leftover = max(0, q - mu)
-
-            profit = (
-                (exp_sales * item.selling_price)
-                + (exp_leftover * item.salvage_value)
-                - (q * item.cost_price)
-            )
-            total_profit += profit
-
-        return -total_profit
-
-
-class StochasticMonteCarloSolver(Solver):
-    """
-    Stochastic solver that accounts for full yield and demand distributions.
-
-    Risk is assessed using either Exponential Utility (default) or CVaR 
-    (Conditional Value at Risk). The solver uses the `SampledDemand` samples 
-    directly to preserve the integrity of the Bayesian posterior.
-
-    Methods:
-    - 'Utility': Optimizes risk-adjusted profit using an exponential utility function. 
-      This is the default method.
-    - 'CVAR': Minimizes the Conditional Value at Risk, focusing on the average of the 
-      worst alpha% of outcomes.
-    """
-
-    def __init__(
-        self,
-        problems: list[tuple[Item, DemandDistribution]],
-        limits: dict[str, float],
-        n_samples: int = 10000,
-    ):
-        self.problems = problems
-        self.limits = limits
-        
-        # Determine n_samples based on the first sampled distribution found
-        # to avoid unnecessary resampling of Bayesian posteriors.
-        first_dist = self.problems[0][1]
-        if hasattr(first_dist, "samples"):
-            self.n_samples = len(first_dist.samples)
-        else:
-            self.n_samples = n_samples
-
-        self.lambdas = {}
-
-        # Pre-generate samples for Common Random Numbers (CRN)
-        self._demand_samples_matrix = []
-        self._yield_samples_matrix = []
-
-        for item, demand_dist in self.problems:
-            # 1. Prepare Demand Samples
-            if hasattr(demand_dist, "samples"):
-                # Use samples directly if the count matches the solver's n_samples
-                if len(demand_dist.samples) == self.n_samples:
-                    d_samp = demand_dist.samples
-                else:
-                    # Only resample if there is a mismatch across items
-                    d_samp = np.random.choice(demand_dist.samples, self.n_samples)
-            else:
-                # Generate from analytical distribution (Normal)
-                d_samp = np.random.normal(demand_dist.mean, demand_dist.std, self.n_samples)
-                d_samp = np.maximum(0, d_samp)  # Clamp negative demand
-            self._demand_samples_matrix.append(d_samp)
-
-            # 2. Prepare Yield Samples
-            y_samp = item.yield_distribution.sample(self.n_samples)
-            self._yield_samples_matrix.append(y_samp)
-
-        self._demand_samples_matrix = np.array(self._demand_samples_matrix)
-        self._yield_samples_matrix = np.array(self._yield_samples_matrix)
-
-    def solve(
-        self, method="Utility", risk_aversion: float = 0.0, cvar: float = 0.05
-    ) -> dict[str, int]:
-        self.risk_aversion = risk_aversion
-        self.cvar = cvar
-
-        n_items = len(self.problems)
+    def _build_constraint(self) -> LinearConstraint:
+        """Build a LinearConstraint from ``item.constraints`` and ``self.limits``."""
         names = list(self.limits.keys())
-
-        # Constraint Matrix
-        A = np.zeros((len(names), n_items))
-        upper_bound = np.array(list(self.limits.values()))
-        lower_bound = np.array([-np.inf] * len(names))
-
+        n = len(self.problems)
+        A = np.zeros((len(names), n))
         for r, name in enumerate(names):
             for c, (item, _) in enumerate(self.problems):
-                val = item.constraints.get(name, 0.0)
-                A[r, c] = val
+                A[r, c] = item.constraints.get(name, 0.0)
 
-        linear_cons = LinearConstraint(A, lower_bound, upper_bound)
-
-        # Initial Guess
-        x0 = []
-        for i, (_, dem) in enumerate(self.problems):
-            d_mean = self._demand_samples_matrix[i].mean()
-            y_mean = self._yield_samples_matrix[i].mean()
-            x0.append(d_mean / max(y_mean, 0.01))
-
-        x0 = np.array(x0)
-        bounds = [(0, np.inf) for _ in range(n_items)]
-
-        match method:
-            case "Utility":
-                obj_func = self._utility_function
-            case "CVAR":
-                obj_func = self._CVAR_function
-
-        # Optimize
-        # Define a Hessian function that returns a zero matrix as the constraints are linear
-        def hess_zero(x):
-            return np.zeros((len(x), len(x)))
-
-        res = minimize(
-            fun=obj_func,
-            x0=x0,
-            method="trust-constr",
-            constraints=[linear_cons],
-            bounds=bounds,
-            hess=hess_zero,
-        )
-
-        if res.v:
-            self.lambdas = {n: float(abs(x)) for n, x in zip(names, res.v[0])}
-
-        # Return integer quantities
-        allocation = np.floor(res.x).astype(int)
-        self.allocation = {
-            self.problems[i][0].name: q for i, q in enumerate(allocation)
-        }
-        return self.allocation
-
-    def _CVAR_function(self, quantities):
-        Q = quantities.reshape(-1, 1)
-
-        Q_eff = Q * self._yield_samples_matrix
-        Sales = np.minimum(Q_eff, self._demand_samples_matrix)
-        Leftover = Q_eff - Sales
-
-        prices = np.array([p[0].selling_price for p in self.problems]).reshape(-1, 1)
-        costs = np.array([p[0].cost_price for p in self.problems]).reshape(-1, 1)
-        salvages = np.array([p[0].salvage_value for p in self.problems]).reshape(-1, 1)
-
-        Revenue = Sales * prices
-        Salvage = Leftover * salvages
-        Cost = Q * costs
-
-        # Sum profit across items to get Portfolio Profit per scenario
-        portfolio_profit = np.sum(Revenue + Salvage - Cost, axis=0)
-
-        mean_profit = np.mean(portfolio_profit)
-
-        if self.risk_aversion == 0:
-            return -mean_profit
-
-        # CVaR Calculation: Average of the worst alpha% outcomes
-        k = int(self.n_samples * self.cvar)
-        # Partition puts the smallest k elements at the front (unsorted)
-        partitioned = np.partition(portfolio_profit, k)
-        cvar_val = np.mean(partitioned[:k])
-
-        # Weighted Objective
-        obj = (1 - self.risk_aversion) * mean_profit + self.risk_aversion * cvar_val
-
-        return -obj
-
-    def _utility_function(self, quantities):
-        Q = quantities.reshape(-1, 1)
-        Q_eff = Q * self._yield_samples_matrix
-        Sales = np.minimum(Q_eff, self._demand_samples_matrix)
-        Leftover = Q_eff - Sales
-
-        prices = np.array([p[0].selling_price for p in self.problems]).reshape(-1, 1)
-        costs = np.array([p[0].cost_price for p in self.problems]).reshape(-1, 1)
-        salvages = np.array([p[0].salvage_value for p in self.problems]).reshape(-1, 1)
-
-        Revenue = Sales * prices
-        Salvage = Leftover * salvages
-        Cost = Q * costs
-
-        portfolio_profit = np.sum(Revenue + Salvage - Cost, axis=0)
-
-        if self.risk_aversion == 0:
-            return -np.mean(portfolio_profit)
-
-        # Use the dynamically scaled lambda
-        # We normalize the exponential input to avoid overflow/underflow
-        # U(x) = -exp(-lam * x)
-
-        est_revenue = 0.0
-        for i, (item, _) in enumerate(self.problems):
-            # Mean demand * Price
-            est_revenue += self._demand_samples_matrix[i].mean() * item.selling_price
-
-        profit_scale = max(1.0, est_revenue)  # Avoid div/0
-
-        # Lambda = RRA / Wealth
-        self._current_lambda = self.risk_aversion / profit_scale
-
-        return np.mean(np.exp(-self._current_lambda * portfolio_profit))
+        upper = np.array(list(self.limits.values()), dtype=float)
+        lower = np.full(len(names), -np.inf)
+        return LinearConstraint(A, lower, upper)  # type: ignore[arg-type]
