@@ -8,8 +8,8 @@ import xarray as xr
 from pymc_marketing.mmm import (
     GeometricAdstock,
     LogisticSaturation,
-    MMM,
 )
+from pymc_marketing.mmm.multidimensional import MMM
 
 from .base import BaseForecaster
 
@@ -158,7 +158,6 @@ class MediaMixModel(BaseForecaster):
     def forecast(
         self,
         df_future: pd.DataFrame,
-        original_scale: bool = True,
     ) -> xr.DataArray:
         """
         Sample the posterior predictive for out-of-sample periods.
@@ -168,8 +167,6 @@ class MediaMixModel(BaseForecaster):
         df_future : pd.DataFrame
             Must contain ``date_col``, all ``channel_columns``, and (if
             specified at construction) all ``control_columns``.
-        original_scale : bool
-            Return predictions in the original target scale. Default ``True``.
 
         Returns
         -------
@@ -177,11 +174,12 @@ class MediaMixModel(BaseForecaster):
             Shape ``(date, sample)`` — combined chain × draw posterior
             predictive samples.
         """
-        self.predictions = self._mmm.sample_posterior_predictive(
-            df_future,
-            combined=True,
-            original_scale=original_scale,
-        )
+        result = self._mmm.sample_posterior_predictive(df_future, combined=True)
+        # az.extract returns a Dataset even for a single variable; unwrap to DataArray
+        if isinstance(result, xr.Dataset):
+            self.predictions = result[self._mmm.output_var]
+        else:
+            self.predictions = result
         return self.predictions
 
     # ------------------------------------------------------------------
