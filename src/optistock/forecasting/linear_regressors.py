@@ -1,3 +1,7 @@
+"""
+Module for family of linear bayes regressors
+"""
+
 from typing import Optional
 
 import pymc as pm
@@ -297,7 +301,9 @@ class BayesTimeSeries(BaseForecaster):
         if self.forecast_idata is None:
             raise RuntimeError("You must call .forecast() before accessing results.")
 
-        demands = self.forecast_idata.predictions["y"].sel(time=slice(start_date, end_date))
+        demands = self.forecast_idata.predictions["y"].sel(
+            time=slice(start_date, end_date)
+        )
         return (demands.sum(dim="time") * self.max_scaler).to_dataset(name="demand")
 
 
@@ -466,7 +472,9 @@ class BARTBayesTimeSeries(BaseForecaster):
         if self.forecast_idata is None:
             raise RuntimeError("You must call .forecast() before accessing results.")
 
-        demands = self.forecast_idata.predictions["y"].sel(time=slice(start_date, end_date))
+        demands = self.forecast_idata.predictions["y"].sel(
+            time=slice(start_date, end_date)
+        )
         return (demands.sum(dim="time") * self.max_scaler).to_dataset(name="demand")
 
 
@@ -583,5 +591,7 @@ class HSGPBayesTimeSeries(BaseForecaster):
         if self.forecast_idata is None:
             raise RuntimeError("You must call .forecast() before accessing results.")
 
-        demands = self.forecast_idata.predictions["y"].sel(time=slice(start_date, end_date))
+        demands = self.forecast_idata.predictions["y"].sel(
+            time=slice(start_date, end_date)
+        )
         return (demands.sum(dim="time") * self.max_scaler).to_dataset(name="demand")

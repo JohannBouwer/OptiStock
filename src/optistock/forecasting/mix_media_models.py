@@ -94,6 +94,7 @@ class MediaMixModel(BaseForecaster):
         self.control_columns = control_columns
 
         self._mmm = MMM(
+            target_column=self.target_col,
             date_column=date_col,
             channel_columns=channel_columns,
             control_columns=control_columns,
@@ -116,10 +117,6 @@ class MediaMixModel(BaseForecaster):
     @property
     def _y(self) -> pd.Series:
         return self.data[self.target_col]
-
-    # ------------------------------------------------------------------
-    # Core interface
-    # ------------------------------------------------------------------
 
     def fit(
         self,
@@ -181,10 +178,6 @@ class MediaMixModel(BaseForecaster):
         else:
             self.predictions = result
         return self.predictions
-
-    # ------------------------------------------------------------------
-    # Visualisation
-    # ------------------------------------------------------------------
 
     def plot_forecast(self) -> tuple:
         """
@@ -252,7 +245,7 @@ class MediaMixModel(BaseForecaster):
         if "control_contribution" in posterior.data_vars:
             extra.append(("Control Contribution", "control_contribution"))
         # Time-varying intercept produces a "date"-dimensioned intercept
-        intercept = posterior["intercept"]
+        intercept = posterior["intercept_contribution"]
         if "date" in intercept.dims:
             extra.append(("Baseline (Time-varying)", "intercept"))
 
@@ -295,10 +288,6 @@ class MediaMixModel(BaseForecaster):
 
         fig.tight_layout()
         return fig, np.asarray(axes)
-
-    # ------------------------------------------------------------------
-    # Demand distribution
-    # ------------------------------------------------------------------
 
     def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
         """
