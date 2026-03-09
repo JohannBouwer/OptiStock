@@ -226,12 +226,12 @@ class BayesTimeSeries(BaseForecaster):
 
     def plot_forecast(self):
         """
-        Plots the forecast with 94% HDI uncertainty intervals.
+        Plots the forecast with 94% HDI uncertainty intervals in the original scale.
         """
 
         dates = self.forecast_idata.predictions.time
-        # Extract mean and HDI
-        mu_samples = self.forecast_idata.predictions["y"]
+        # Extract mean and HDI, then un-scale to original units
+        mu_samples = self.forecast_idata.predictions["y"] * self.max_scaler
         mu_mean = mu_samples.mean(dim=["chain", "draw"])
         hdi_data = az.hdi(mu_samples, hdi_prob=0.94)["y"]
 
@@ -247,6 +247,7 @@ class BayesTimeSeries(BaseForecaster):
             color="C0",
         )
         ax.set_title("Posterior Predictive Forecast")
+        ax.set_ylabel("Sales")
         ax.legend()
 
         return (fig, ax)
@@ -272,9 +273,9 @@ class BayesTimeSeries(BaseForecaster):
         fig, axes = plt.subplots(len(components), 1, figsize=(12, 12), sharex=True)
 
         for i, (comp, color) in enumerate(zip(components, colors)):
-            # Calculate mean and HDI for the component
-            mean = post[comp].mean(dim=["chain", "draw"])
-            hdi = az.hdi(post[comp], hdi_prob=0.94)[comp]
+            # Calculate mean and HDI, un-scaled to original units
+            mean = post[comp].mean(dim=["chain", "draw"]) * self.max_scaler
+            hdi = az.hdi(post[comp] * self.max_scaler, hdi_prob=0.94)[comp]
 
             axes[i].plot(
                 dates, mean, color=color, lw=2, label=f"{comp.capitalize()} (Mean)"
@@ -288,6 +289,7 @@ class BayesTimeSeries(BaseForecaster):
                 label="94% HDI",
             )
             axes[i].set_title(f"Component: {comp.capitalize()}")
+            axes[i].set_ylabel("Sales")
             axes[i].legend(loc="upper left")
             axes[i].grid(axis="y", linestyle="--", alpha=0.5)
 
@@ -417,9 +419,10 @@ class BARTBayesTimeSeries(BaseForecaster):
         dates = self.forecast_idata.predictions.time
         y_samples = self.forecast_idata.predictions["y"]
 
-        # Calculate summary statistics
-        y_mean = y_samples.mean(dim=["chain", "draw"])
-        hdi_data = az.hdi(y_samples, hdi_prob=0.94)["y"]
+        # Calculate summary statistics, un-scaled to original units
+        y_samples_unscaled = y_samples * self.max_scaler
+        y_mean = y_samples_unscaled.mean(dim=["chain", "draw"])
+        hdi_data = az.hdi(y_samples_unscaled, hdi_prob=0.94)["y"]
 
         fig, ax = plt.subplots(1, 1, figsize=(12, 6))
 
@@ -438,8 +441,7 @@ class BARTBayesTimeSeries(BaseForecaster):
 
         ax.set_title("BART Posterior Predictive Forecast")
         ax.set_xlabel("Date")
-        ax.set_ylabel("Sales (Scaled)")
-        ax.set_ylim(0, 1)
+        ax.set_ylabel("Sales")
         ax.legend()
         ax.grid(True, alpha=0.3)
 
@@ -562,28 +564,32 @@ class HSGPBayesTimeSeries(BaseForecaster):
         return self.forecast_idata
 
     def plot_forecast(self):
-        """Standard forecast plot with HDI."""
+        """Standard forecast plot with HDI in the original scale."""
         if self.forecast_idata is None:
             raise RuntimeError("Call .predict() first.")
 
         dates = self.forecast_idata.predictions.time
-        y_samples = self.forecast_idata.predictions["y"]
+        y_samples = self.forecast_idata.predictions["y"] * self.max_scaler
 
         fig, ax = plt.subplots(figsize=(12, 6))
         ax.plot(dates, y_samples.mean(dim=["chain", "draw"]), label="HSGP Mean")
         az.plot_hdi(dates, y_samples, hdi_prob=0.94, ax=ax, fill_kwargs={"alpha": 0.3})
         ax.set_title("HSGP Time Series Forecast")
+        ax.set_ylabel("Sales")
         return fig, ax
 
     def plot_components(self):
-        """Visualizes the Intercept vs the GP Trend (phi)."""
+        """Visualizes the Intercept vs the GP Trend (phi) in the original scale."""
         post = self.idata.posterior
         fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
         for i, comp in enumerate(["intercept", "phi"]):
-            mean = post[comp].mean(dim=["chain", "draw"])
+            mean = post[comp].mean(dim=["chain", "draw"]) * self.max_scaler
+            hdi = az.hdi(post[comp] * self.max_scaler, hdi_prob=0.94)[comp]
             axes[i].plot(post.time, mean, label=comp)
+            axes[i].fill_between(post.time, hdi[:, 0], hdi[:, 1], alpha=0.2)
             axes[i].set_title(f"Component: {comp}")
+            axes[i].set_ylabel("Sales")
 
         return fig, axes
 

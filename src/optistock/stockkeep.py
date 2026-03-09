@@ -270,11 +270,10 @@ class StockKeep:
             actual = holdout_df[target]
             dates = pd.to_datetime(holdout_df[self.date_col]) if self.date_col in holdout_df.columns else holdout_df.index
 
-            # Scale actuals to model's internal scale when a max_scaler exists
-            scale = getattr(forecaster, "max_scaler", 1.0) or 1.0
+            # Forecasts are returned in original scale, so plot actuals as-is
             ax.scatter(
                 dates,
-                actual.values / scale,
+                actual.values,
                 color="black",
                 marker="x",
                 s=25,

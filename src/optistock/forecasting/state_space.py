@@ -53,6 +53,7 @@ class UnivariateSSM(BaseForecaster):
         self.target = target_col
         self.y = self.data[self.target]
         self.exog = exog or {}
+        self.max_scaler: float = 1.0  # set in fit()
 
         self._seasonal_name: Optional[str] = None
 
@@ -140,6 +141,7 @@ class UnivariateSSM(BaseForecaster):
         Note: pymc-extras does not include scalar (undimensioned) sigma parameters
         in ``param_dims``.  Those are registered explicitly after the loop.
         """
+        # All priors are specified in the scaled [0, 1] space.
         meas_sigma = f"sigma_{self._MEAS_ERROR_NAME}"
         registered: set[str] = set()
 
@@ -150,24 +152,31 @@ class UnivariateSSM(BaseForecaster):
             dim_kwargs = {"dims": dims} if dims else {}
 
             if param == "P0":
-                P0_diag = pm.Gamma("P0_diag", alpha=50, beta=1)  # noqa: F841
+                # Initial state covariance — small in [0, 1] space
+                P0_diag = pm.Gamma("P0_diag", alpha=2, beta=10)  # noqa: F841
                 pm.Deterministic(  # noqa: F841
                     "P0",
                     pt.eye(self.model.k_states) * P0_diag,
                     dims=dims,
                 )
             elif param.startswith("initial_"):
-                pm.Normal(param, **dim_kwargs)  # noqa: F841
+                # Initial states are in scaled [0, 1] units
+                pm.Normal(param, mu=0.5, sigma=1.0, **dim_kwargs)  # noqa: F841
             elif param == meas_sigma:
-                pm.HalfNormal(param, sigma=5)  # noqa: F841
+                # Measurement noise — tight prior for [0, 1] scaled data
+                pm.HalfNormal(param, sigma=0.05)  # noqa: F841
             elif param.startswith("sigma_beta_"):
-                pm.Gamma(param, alpha=2, beta=1, **dim_kwargs)  # noqa: F841
+                # Innovation variance for time-varying regression coefs
+                pm.Gamma(param, alpha=2, beta=50, **dim_kwargs)  # noqa: F841
             elif param.startswith("sigma_"):
-                pm.Gamma(param, alpha=2, beta=1, **dim_kwargs)  # noqa: F841
+                # Process noise (level, slope, seasonal) in [0, 1] space
+                pm.Gamma(param, alpha=2, beta=50, **dim_kwargs)  # noqa: F841
             elif param.startswith("beta_"):
+                # Regression coefficients: exog scale unknown, keep relatively wide
                 pm.HalfNormal(param, sigma=3, **dim_kwargs)  # noqa: F841
             elif param.startswith("params_"):
-                pm.Normal(param, sigma=10, **dim_kwargs)  # noqa: F841
+                # Initial seasonal amplitudes in [0, 1] space
+                pm.Normal(param, sigma=0.5, **dim_kwargs)  # noqa: F841
             else:
                 continue
             registered.add(param)
@@ -175,7 +184,7 @@ class UnivariateSSM(BaseForecaster):
         # pymc-extras omits scalar sigma params from param_dims; register them here
         # if the loop above didn't already handle them.
         if meas_sigma not in registered:
-            pm.HalfNormal(meas_sigma, sigma=5)  # noqa: F841
+            pm.HalfNormal(meas_sigma, sigma=0.05)  # noqa: F841
 
         seasonal_sigma = f"sigma_{self._seasonal_name}" if self._seasonal_name else None
         if (
@@ -183,7 +192,7 @@ class UnivariateSSM(BaseForecaster):
             and seasonal_sigma not in registered
             and self._seasonal_innovations
         ):
-            pm.Gamma(seasonal_sigma, alpha=2, beta=1)  # noqa: F841
+            pm.Gamma(seasonal_sigma, alpha=2, beta=50)  # noqa: F841
 
     def fit(self, sampler: str = "nutpie", **sampler_kwargs) -> None:
         """
@@ -197,6 +206,12 @@ class UnivariateSSM(BaseForecaster):
         **sampler_kwargs
             Additional keyword arguments forwarded to ``pm.sample``.
         """
+        # Scale target to [0, 1] for better prior specification and MCMC sampling.
+        # All posterior quantities are in scaled space; un-scaling happens in the
+        # plot methods and get_demand_distribution.
+        self.max_scaler = float(self.y.max())
+        y_scaled = self.y / self.max_scaler
+
         with pm.Model(coords=self.ssm.coords):
             self._register_priors()
 
@@ -207,7 +222,7 @@ class UnivariateSSM(BaseForecaster):
                     dims=("time", f"state_{col}"),
                 )
 
-            self.ssm.build_statespace_graph(self.y, mode="JAX")
+            self.ssm.build_statespace_graph(y_scaled, mode="JAX")
             self.idata = pm.sample(nuts_sampler=sampler, **sampler_kwargs)
 
     def smooth_and_filter(self, method: str = "cholesky") -> None:
@@ -274,7 +289,7 @@ class UnivariateSSM(BaseForecaster):
             self.smooth_and_filter()
 
         obs = self.post_idata.smoothed_posterior_observed.isel(observed_state=0)
-        obs_stacked = obs.stack(sample=["chain", "draw"])
+        obs_stacked = obs.stack(sample=["chain", "draw"]) * self.max_scaler
 
         mean = obs_stacked.mean(dim="sample").values
         lower_95 = obs_stacked.quantile(0.025, dim="sample").values
@@ -294,6 +309,7 @@ class UnivariateSSM(BaseForecaster):
             x, lower_50, upper_50, color="tab:blue", alpha=0.35, label="50% HDI"
         )
         ax.set_title(f"{self.target} — In-sample Smoothed Posterior")
+        ax.set_ylabel(self.target)
         ax.legend()
         fig.tight_layout()
 
@@ -314,7 +330,7 @@ class UnivariateSSM(BaseForecaster):
             raise ValueError("No forecast found. Please call `forecast()` first.")
 
         obs = self.forecast_idata["forecast_observed"].isel(observed_state=0)
-        obs_stacked = obs.stack(sample=["chain", "draw"])
+        obs_stacked = obs.stack(sample=["chain", "draw"]) * self.max_scaler
 
         mean = obs_stacked.mean(dim="sample").values
         lower_95 = obs_stacked.quantile(0.025, dim="sample").values
@@ -325,14 +341,15 @@ class UnivariateSSM(BaseForecaster):
         x = self.forecast_idata["time"].values
 
         fig, ax = plt.subplots(figsize=(14, 4))
-        ax.plot(x, mean, color="tab:blue", label="Smoothed Mean")
+        ax.plot(x, mean, color="tab:blue", label="Forecast Mean")
         ax.fill_between(
             x, lower_95, upper_95, color="tab:blue", alpha=0.15, label="95% HDI"
         )
         ax.fill_between(
             x, lower_50, upper_50, color="tab:blue", alpha=0.35, label="50% HDI"
         )
-        ax.set_title(f"{self.target} — In-sample Smoothed Posterior")
+        ax.set_title(f"{self.target} — Out-of-sample Forecast")
+        ax.set_ylabel(self.target)
         ax.legend()
         fig.tight_layout()
 
@@ -369,14 +386,16 @@ class UnivariateSSM(BaseForecaster):
                 .sel(state=state)
                 .mean(dim="sample")
                 .values
+                * self.max_scaler
             )
-            hdi_vals = component_hdi.smoothed_posterior.sel(state=state).values
+            hdi_vals = component_hdi.smoothed_posterior.sel(state=state).values * self.max_scaler
 
             ax.plot(x, mean, color="tab:orange")
             ax.fill_between(
                 x, hdi_vals[:, 0], hdi_vals[:, 1], color="tab:orange", alpha=0.2
             )
             ax.set_title(state.replace("_", " ").title())
+            ax.set_ylabel(self.target)
 
         fig.tight_layout()
         return fig, np.asarray(axes)
@@ -417,6 +436,7 @@ class UnivariateSSM(BaseForecaster):
             self.forecast_idata["forecast_observed"]
             .isel(observed_state=0, time=time_indices)
             .sum(dim="time")
+            * self.max_scaler
         )
 
         return total.to_dataset(name="demand")
