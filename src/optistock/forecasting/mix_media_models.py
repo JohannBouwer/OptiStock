@@ -175,7 +175,12 @@ class MediaMixModel(BaseForecaster):
             Shape ``(date, sample)`` — combined chain × draw posterior
             predictive samples.
         """
-        result = self._mmm.sample_posterior_predictive(df_future, combined=True)
+        result = (
+            self._mmm.sample_posterior_predictive(
+                df_future, combined=True, extend_idata=False
+            )
+            * self._mmm.scalers._target.values
+        )
         # az.extract returns a Dataset even for a single variable; unwrap to DataArray
         if isinstance(result, xr.Dataset):
             self.predictions = result[self._mmm.output_var]
@@ -253,7 +258,7 @@ class MediaMixModel(BaseForecaster):
         if "control_contribution" in posterior.data_vars:
             extra.append(("Control Contribution", "control_contribution"))
         # Time-varying intercept produces a "date"-dimensioned intercept
-        intercept = posterior["intercept_contribution"]
+        intercept = posterior["intercept_baseline"]
         if "date" in intercept.dims:
             extra.append(("Baseline (Time-varying)", "intercept"))
 
