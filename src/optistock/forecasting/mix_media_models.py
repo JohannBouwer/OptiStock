@@ -118,6 +118,10 @@ class MediaMixModel(BaseForecaster):
     def _y(self) -> pd.Series:
         return self.data[self.target_col]
 
+    # ------------------------------------------------------------------
+    # Core interface
+    # ------------------------------------------------------------------
+
     def fit(
         self,
         target: str = None,
@@ -179,6 +183,10 @@ class MediaMixModel(BaseForecaster):
             self.predictions = result
         return self.predictions
 
+    # ------------------------------------------------------------------
+    # Visualisation
+    # ------------------------------------------------------------------
+
     def plot_forecast(self) -> tuple:
         """
         Plot the out-of-sample posterior predictive with 94% uncertainty band.
@@ -194,9 +202,9 @@ class MediaMixModel(BaseForecaster):
             raise RuntimeError("Call forecast() before plot_forecast().")
 
         dates = self.predictions.coords["date"].values
-        mean = self.predictions.mean(dim="sample").y.values
-        lower = self.predictions.quantile(0.03, dim="sample").y.values
-        upper = self.predictions.quantile(0.97, dim="sample").y.values
+        mean = self.predictions.mean(dim="sample").values
+        lower = self.predictions.quantile(0.03, dim="sample").values
+        upper = self.predictions.quantile(0.97, dim="sample").values
 
         fig, ax = plt.subplots(figsize=(14, 4))
         ax.plot(dates, mean, color="tab:blue", lw=1.5, label="Predicted Mean")
@@ -289,6 +297,10 @@ class MediaMixModel(BaseForecaster):
         fig.tight_layout()
         return fig, np.asarray(axes)
 
+    # ------------------------------------------------------------------
+    # Demand distribution
+    # ------------------------------------------------------------------
+
     def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
         """
         Return the posterior distribution of total demand over a date window.
@@ -322,4 +334,4 @@ class MediaMixModel(BaseForecaster):
                 f"No forecast data found between {start_date!r} and {end_date!r}."
             )
 
-        return window.sum(dim="date")
+        return window.sum(dim="date").to_dataset(name="demand")
