@@ -2,11 +2,46 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import seaborn as sns
+from scipy.stats import norm
 from .core import (
+    SampledDemand,
     plot_demand_distribution_helper,
     plot_profit_curve_helper,
     calculate_expected_profit,
 )
+
+
+# ---------------------------------------------------------------------------
+# Solver convenience helper
+# ---------------------------------------------------------------------------
+
+
+def solver_to_problems(solver) -> list[tuple]:
+    """
+    Convert a solved ``ForecastSolver`` into ``(Item, SampledDemand)`` pairs
+    suitable for all portfolio plot functions.
+
+    Call this after ``solver.solve()`` so that ``solver._demand_matrix`` is
+    populated with the posterior demand samples used during optimisation.
+
+    Example
+    -------
+    ::
+
+        allocation = solver.solve("2025-01-01", "2025-12-31")
+        problems   = solver_to_problems(solver)
+        fig = plot_constrained_allocation(allocation, problems, solver.limits)
+    """
+    result = []
+    for i, (item, _) in enumerate(solver.problems):
+        samples = solver._demand_matrix[i]
+        result.append((item, SampledDemand(samples)))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Plot functions
+# ---------------------------------------------------------------------------
 
 
 def plot_multi_item_allocation(
@@ -99,21 +134,14 @@ def plot_constrained_allocation(allocation, inventory_problems, limits):
     Row 2: Demand Distributions (Shared Axis)
     Row 3: Profit Curves (Shared Axis)
     """
-    n_items = len(inventory_problems)
     n_constraints = len(limits)
 
-    # Fixed layout: 4 Rows
-    # Row 0: Gauges
-    # Row 1: Quantities
-    # Row 2: Shared Demand
-    # Row 3: Shared Profit
     fig = plt.figure(figsize=(16, 16))
     gs = gridspec.GridSpec(
         4, n_constraints, figure=fig, height_ratios=[0.8, 1.0, 1.5, 1.5]
     )
 
     # --- Row 0: Constraint Gauges ---
-    # We create one subplot per constraint in the first row
     for i, (limit_name, limit_val) in enumerate(limits.items()):
         ax = fig.add_subplot(gs[0, i])
 
@@ -144,12 +172,10 @@ def plot_constrained_allocation(allocation, inventory_problems, limits):
         )
 
     # --- Row 1: Quantities ---
-    # Span all columns in the grid
     ax_qty = fig.add_subplot(gs[1, :])
     names = [p[0].name for p in inventory_problems]
     quantities = [allocation.get(name, 0) for name in names]
 
-    # Generate palette for items to use consistently across plots
     palette = sns.color_palette("husl", len(inventory_problems))
     item_colors = {name: color for name, color in zip(names, palette)}
 
@@ -179,8 +205,6 @@ def plot_constrained_allocation(allocation, inventory_problems, limits):
                 label=label,
             )
         else:
-            from scipy.stats import norm
-
             x_min = max(0, demand.mean - 4 * demand.std)
             x_max = demand.mean + 4 * demand.std
             x_range = np.linspace(x_min, x_max, 200)
@@ -188,7 +212,6 @@ def plot_constrained_allocation(allocation, inventory_problems, limits):
             ax_dem.plot(x_range, y_vals, color=color, lw=2, label=label)
             ax_dem.fill_between(x_range, y_vals, alpha=0.1, color=color)
 
-        # Mark Q*
         ax_dem.axvline(q_val, color=color, linestyle="--", alpha=0.8)
 
     ax_dem.set_title("Demand Distributions Comparison")
@@ -196,46 +219,15 @@ def plot_constrained_allocation(allocation, inventory_problems, limits):
     ax_dem.set_ylabel("Probability Density")
     ax_dem.legend()
 
-    # --- Row 3: Shared Profit Curves ---
+    # --- Row 3: Shared Profit Curves (delegates to core helper) ---
     ax_prof = fig.add_subplot(gs[3, :])
 
     for item, demand in inventory_problems:
         q_val = allocation.get(item.name, 0)
         color = item_colors[item.name]
-
-        # Logic to generate profit curve
-        if hasattr(demand, "mean"):
-            center = demand.mean
-            spread = demand.std * 3
-        else:
-            center = np.mean(demand.samples)
-            spread = (np.max(demand.samples) - np.min(demand.samples)) / 2
-
-        start_q = 0
-        end_q = int(max(q_val * 1.5, center + spread))
-        q_range = np.unique(np.linspace(start_q, end_q, 50).astype(int))
-
-        profits = []
-        n_sims = 1000  # Faster sim for plotting
-        if hasattr(demand, "samples"):
-            sim_d = np.random.choice(demand.samples, n_sims)
-        else:
-            sim_d = np.random.normal(demand.mean, demand.std, n_sims)
-            sim_d = np.maximum(0, sim_d)
-
-        for q in q_range:
-            sold = np.minimum(q, sim_d)
-            unsold = np.maximum(0, q - sim_d)
-            rev = sold * item.selling_price
-            sal = unsold * item.salvage_value
-            cost = q * item.cost_price
-            profits.append(np.mean(rev + sal - cost))
-
-        ax_prof.plot(q_range, profits, color=color, lw=2, label=f"{item.name}")
-        ax_prof.axvline(q_val, color=color, linestyle="--", alpha=0.8)
-        # Mark peak
-        peak_idx = np.argmax(profits)
-        ax_prof.scatter([q_range[peak_idx]], [profits[peak_idx]], color=color, s=30)
+        plot_profit_curve_helper(
+            ax_prof, item, demand, q_val, color=color, label_prefix=item.name
+        )
 
     ax_prof.set_title("Expected Profit Curves Comparison")
     ax_prof.set_xlabel("Order Quantity")
@@ -249,6 +241,9 @@ def plot_constrained_allocation(allocation, inventory_problems, limits):
 def plot_optimization_summary(allocation, inventory_problems, lambdas=None):
     """
     Visualizes Waterfall chart (Potential vs Realized) and Shadow Prices.
+
+    Works with both parametric demand objects (``NormalDemand``) and
+    sample-based objects (``SampledDemand`` or any object with ``.samples``).
     """
     fig = plt.figure(figsize=(14, 8))
     gs = gridspec.GridSpec(2, 2, height_ratios=[1, 1.5])
@@ -263,7 +258,12 @@ def plot_optimization_summary(allocation, inventory_problems, lambdas=None):
         realized_profits[item.name] = calculate_expected_profit(item, demand, q_actual)
 
         fractile = item.critical_fractile
-        q_opt = max(0, np.ceil(demand.get_quantile(fractile)))
+        # Use empirical quantile when samples are available; fall back to
+        # parametric get_quantile for DemandDistribution objects.
+        if hasattr(demand, "samples"):
+            q_opt = max(0, int(np.ceil(np.quantile(demand.samples, fractile))))
+        else:
+            q_opt = max(0, int(np.ceil(demand.get_quantile(fractile))))
         unconstrained_profits[item.name] = calculate_expected_profit(
             item, demand, q_opt
         )

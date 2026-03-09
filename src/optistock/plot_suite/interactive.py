@@ -209,7 +209,7 @@ def create_item_dashboard(initial_item, initial_demand):
 
     ui = widgets.VBox(
         [
-            widgets.HTML(f"Analysis: {initial_item.name}</h3>"),
+            widgets.HTML(f"<h3>Analysis: {initial_item.name}</h3>"),
             widgets.HBox([w_price, w_cost, w_salvage]),
             widgets.HBox([w_mean_demand, w_std_demand]),
             widgets.HBox([w_enable_yield, w_yield_alpha, w_yield_beta]),
