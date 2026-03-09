@@ -27,6 +27,33 @@ from .forecasting.mix_media_models import MediaMixModel
 from .items import Item
 from .solvers import ForecastSolver
 from .distributions.yield_distributions import YieldDistribution, PerfectYield
+from .plot_suite.single_item import plot_single_item_analysis
+from .plot_suite.portfolio import (
+    plot_multi_item_allocation,
+    plot_constrained_allocation,
+    plot_optimization_summary as _plot_optimization_summary,
+)
+from .plot_suite.risk import plot_risk_comparison
+
+
+class _DemandSamples:
+    """Thin adapter that wraps a 1-D numpy array of demand samples into the
+    interface expected by the plot-suite helpers (.samples, .mean, .std,
+    .get_quantile)."""
+
+    def __init__(self, samples: np.ndarray) -> None:
+        self.samples = np.asarray(samples, dtype=float)
+
+    @property
+    def mean(self) -> float:
+        return float(self.samples.mean())
+
+    @property
+    def std(self) -> float:
+        return float(self.samples.std())
+
+    def get_quantile(self, q: float) -> float:
+        return float(np.quantile(self.samples, q))
 
 
 class StockKeep:
@@ -270,6 +297,84 @@ class StockKeep:
         return self.solver.summary()
 
     # ------------------------------------------------------------------
+    # Solver plot wrappers
+    # ------------------------------------------------------------------
+
+    def plot_allocation(self) -> plt.Figure:
+        """
+        Visualise the current allocation against the posterior demand distributions.
+
+        Automatically selects the appropriate chart:
+        - With resource constraints  → ``plot_constrained_allocation``
+        - Without resource constraints → ``plot_multi_item_allocation``
+
+        Must be called after ``run_holdout`` or ``run``.
+        """
+        self._check_solved()
+        plot_problems = self._build_plot_problems()
+        if self.solver.limits:
+            return plot_constrained_allocation(
+                self.allocation, plot_problems, self.solver.limits
+            )
+        budget = next(iter(self.solver.limits.values()), None) if self.solver.limits else None
+        return plot_multi_item_allocation(self.allocation, plot_problems, budget)
+
+    def plot_item(self, item_name: str) -> plt.Figure:
+        """
+        Single-item demand distribution and profit-curve dashboard.
+
+        Parameters
+        ----------
+        item_name : str
+            Must match a name in ``item_configs``.
+
+        Must be called after ``run_holdout`` or ``run``.
+        """
+        self._check_solved()
+        plot_problems = self._build_plot_problems()
+        match = [(item, dem) for item, dem in plot_problems if item.name == item_name]
+        if not match:
+            raise ValueError(
+                f"No solved data for '{item_name}'. "
+                f"Available: {[it.name for it, _ in plot_problems]}"
+            )
+        item, demand = match[0]
+        qty = self.allocation[item_name]
+        return plot_single_item_analysis(item, demand, qty)
+
+    def plot_risk(
+        self, allocations: dict[str, dict[str, int]] | None = None
+    ) -> plt.Figure:
+        """
+        Overlay profit-distribution curves for one or more allocation strategies.
+
+        Parameters
+        ----------
+        allocations : dict[str, dict[str, int]], optional
+            Mapping of strategy label → allocation dict (item name → quantity).
+            When omitted, the current allocation is shown under the label
+            ``"Current"``.
+
+        Must be called after ``run_holdout`` or ``run``.
+        """
+        self._check_solved()
+        if allocations is None:
+            allocations = {"Current": self.allocation}
+        plot_problems = self._build_plot_problems()
+        return plot_risk_comparison(allocations, plot_problems)
+
+    def plot_optimization_summary(self) -> plt.Figure:
+        """
+        Waterfall chart (potential vs realised profit) and shadow-price bar chart.
+
+        Must be called after ``run_holdout`` or ``run``.
+        """
+        self._check_solved()
+        plot_problems = self._build_plot_problems()
+        shadow = self.solver.shadow_prices if self.solver.shadow_prices else None
+        return _plot_optimization_summary(self.allocation, plot_problems, lambdas=shadow)
+
+    # ------------------------------------------------------------------
     # Private pipeline
     # ------------------------------------------------------------------
 
@@ -387,6 +492,18 @@ class StockKeep:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _check_solved(self) -> None:
+        if self.solver is None or self.allocation is None:
+            raise RuntimeError("Call run_holdout() or run() before plotting.")
+
+    def _build_plot_problems(self) -> list[tuple[Item, "_DemandSamples"]]:
+        """Return (Item, _DemandSamples) pairs built from the last solver run."""
+        assert self.solver is not None and self.solver._demand_matrix is not None
+        return [
+            (item, _DemandSamples(self.solver._demand_matrix[i]))
+            for i, (item, _) in enumerate(self.solver.problems)
+        ]
 
     def _create_items(self, yield_profiles: dict[str, YieldDistribution]) -> list[Item]:
         """Build Item objects from the item_configs DataFrame."""
