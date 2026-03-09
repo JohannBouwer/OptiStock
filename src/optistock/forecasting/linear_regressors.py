@@ -1,3 +1,7 @@
+"""
+Module for family of linear bayes regressors
+"""
+
 from typing import Optional
 
 import pymc as pm
@@ -295,11 +299,12 @@ class BayesTimeSeries(BaseForecaster):
 
     def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
         if self.forecast_idata is None:
-            raise RuntimeError("You must call .predict() before accessing results")
+            raise RuntimeError("You must call .forecast() before accessing results.")
 
-        demands = self.forecast_idata.predictions.sel(time=slice(start_date, end_date))
-
-        return demands.sum(dim=("time")) * self.max_scaler
+        demands = self.forecast_idata.predictions["y"].sel(
+            time=slice(start_date, end_date)
+        )
+        return (demands.sum(dim="time") * self.max_scaler).to_dataset(name="demand")
 
 
 class BARTBayesTimeSeries(BaseForecaster):
@@ -465,13 +470,12 @@ class BARTBayesTimeSeries(BaseForecaster):
 
     def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
         if self.forecast_idata is None:
-            raise RuntimeError("You must call .predict() before accessing results")
+            raise RuntimeError("You must call .forecast() before accessing results.")
 
-        demands = self.forecast_idata.predictions.y.sel(
+        demands = self.forecast_idata.predictions["y"].sel(
             time=slice(start_date, end_date)
         )
-
-        return demands.sum(dim=("time")) * self.max_scaler
+        return (demands.sum(dim="time") * self.max_scaler).to_dataset(name="demand")
 
 
 class HSGPBayesTimeSeries(BaseForecaster):
@@ -585,8 +589,9 @@ class HSGPBayesTimeSeries(BaseForecaster):
 
     def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
         if self.forecast_idata is None:
-            raise RuntimeError("Call .predict() first.")
-        demands = self.forecast_idata.predictions.y.sel(
+            raise RuntimeError("You must call .forecast() before accessing results.")
+
+        demands = self.forecast_idata.predictions["y"].sel(
             time=slice(start_date, end_date)
         )
-        return demands.sum(dim="time") * self.max_scaler
+        return (demands.sum(dim="time") * self.max_scaler).to_dataset(name="demand")

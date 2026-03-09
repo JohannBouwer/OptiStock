@@ -8,8 +8,8 @@ import xarray as xr
 from pymc_marketing.mmm import (
     GeometricAdstock,
     LogisticSaturation,
-    MMM,
 )
+from pymc_marketing.mmm.multidimensional import MMM
 
 from .base import BaseForecaster
 
@@ -94,6 +94,7 @@ class MediaMixModel(BaseForecaster):
         self.control_columns = control_columns
 
         self._mmm = MMM(
+            target_column=self.target_col,
             date_column=date_col,
             channel_columns=channel_columns,
             control_columns=control_columns,
@@ -116,10 +117,6 @@ class MediaMixModel(BaseForecaster):
     @property
     def _y(self) -> pd.Series:
         return self.data[self.target_col]
-
-    # ------------------------------------------------------------------
-    # Core interface
-    # ------------------------------------------------------------------
 
     def fit(
         self,
@@ -158,7 +155,6 @@ class MediaMixModel(BaseForecaster):
     def forecast(
         self,
         df_future: pd.DataFrame,
-        original_scale: bool = True,
     ) -> xr.DataArray:
         """
         Sample the posterior predictive for out-of-sample periods.
@@ -168,8 +164,6 @@ class MediaMixModel(BaseForecaster):
         df_future : pd.DataFrame
             Must contain ``date_col``, all ``channel_columns``, and (if
             specified at construction) all ``control_columns``.
-        original_scale : bool
-            Return predictions in the original target scale. Default ``True``.
 
         Returns
         -------
@@ -177,16 +171,13 @@ class MediaMixModel(BaseForecaster):
             Shape ``(date, sample)`` — combined chain × draw posterior
             predictive samples.
         """
-        self.predictions = self._mmm.sample_posterior_predictive(
-            df_future,
-            combined=True,
-            original_scale=original_scale,
-        )
+        result = self._mmm.sample_posterior_predictive(df_future, combined=True)
+        # az.extract returns a Dataset even for a single variable; unwrap to DataArray
+        if isinstance(result, xr.Dataset):
+            self.predictions = result[self._mmm.output_var]
+        else:
+            self.predictions = result
         return self.predictions
-
-    # ------------------------------------------------------------------
-    # Visualisation
-    # ------------------------------------------------------------------
 
     def plot_forecast(self) -> tuple:
         """
@@ -254,7 +245,7 @@ class MediaMixModel(BaseForecaster):
         if "control_contribution" in posterior.data_vars:
             extra.append(("Control Contribution", "control_contribution"))
         # Time-varying intercept produces a "date"-dimensioned intercept
-        intercept = posterior["intercept"]
+        intercept = posterior["intercept_contribution"]
         if "date" in intercept.dims:
             extra.append(("Baseline (Time-varying)", "intercept"))
 
@@ -297,10 +288,6 @@ class MediaMixModel(BaseForecaster):
 
         fig.tight_layout()
         return fig, np.asarray(axes)
-
-    # ------------------------------------------------------------------
-    # Demand distribution
-    # ------------------------------------------------------------------
 
     def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
         """
