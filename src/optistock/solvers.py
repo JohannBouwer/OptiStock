@@ -24,9 +24,12 @@ from abc import ABC, abstractmethod
 from typing import Literal
 
 import numpy as np
-from scipy.optimize import LinearConstraint, minimize, minimize_scalar
+import warnings
+
+from scipy.optimize import LinearConstraint, NonlinearConstraint, minimize, minimize_scalar
 
 from .forecasting.base import BaseForecaster
+from .inventory_policy import InventoryPolicy
 from .items import Item
 
 
@@ -115,6 +118,7 @@ class ForecastSolver(Solver):
         cvar_alpha: float = 0.10,
         cvar_lambda: float = 0.50,
         risk_aversion: float = 0.0,
+        policies: dict[str, InventoryPolicy] | None = None,
     ):
         if not isinstance(problems, list):
             problems = [problems]
@@ -124,6 +128,7 @@ class ForecastSolver(Solver):
         self.cvar_alpha = cvar_alpha
         self.cvar_lambda = cvar_lambda
         self.risk_aversion = risk_aversion
+        self.policies: dict[str, InventoryPolicy] = policies or {}
 
         self.allocation: dict[str, int] | None = None
         self.shadow_prices: dict[str, float] = {}
@@ -345,13 +350,17 @@ class ForecastSolver(Solver):
         demand = self._demand_matrix[0]
         upper = float(np.percentile(demand, 99.9)) * 2 + 1
 
+        item = self.problems[0][0]
+        policy = self.policies.get(item.name)
+        lower = policy.min_quantity(demand) if policy is not None else 0.0
+
         result = minimize_scalar(
             lambda q: self._objective_fn(np.array([q])),
-            bounds=(0.0, upper),
+            bounds=(lower, upper),
             method="bounded",
             options={"xatol": 0.5},
         )
-        return np.array([max(0, round(float(result.x)))])
+        return np.array([max(lower, round(float(result.x)))])
 
     def _solve_vector(self) -> np.ndarray:
         """Multi-item (or constrained) optimization via trust-region method."""
@@ -365,8 +374,19 @@ class ForecastSolver(Solver):
                 for i in range(n_items)
             ]
         )
-        bounds = [(0.0, None)] * n_items
-        constraints = [self._build_constraint()] if self.limits else []
+
+        # Policy-aware bounds and warm-start floor
+        bounds = []
+        for i, (item, _) in enumerate(self.problems):
+            policy = self.policies.get(item.name)
+            lb = policy.min_quantity(self._demand_matrix[i]) if policy is not None else 0.0
+            bounds.append((lb, None))
+            x0[i] = max(x0[i], lb)
+
+        constraints: list[LinearConstraint | NonlinearConstraint] = (
+            [self._build_constraint()] if self.limits else []
+        )
+        constraints.extend(self._build_service_constraints())
 
         result = minimize(
             fun=self._objective_fn,
@@ -376,6 +396,15 @@ class ForecastSolver(Solver):
             constraints=constraints,
             hess=lambda _: np.zeros((n_items, n_items)),
         )
+
+        if getattr(result, "constr_violation", 0.0) > 1e-4:
+            warnings.warn(
+                f"Service-level constraint may not be fully satisfied "
+                f"(violation={result.constr_violation:.4f}). "
+                "Try relaxing service_level_target or increasing MCMC samples.",
+                UserWarning,
+                stacklevel=3,
+            )
 
         if getattr(result, "v", None):
             names = list(self.limits.keys())
@@ -397,3 +426,34 @@ class ForecastSolver(Solver):
         upper = np.array(list(self.limits.values()), dtype=float)
         lower = np.full(len(names), -np.inf)
         return LinearConstraint(A, lower, upper)  # type: ignore[arg-type]
+
+    def _build_service_constraints(self) -> list[NonlinearConstraint]:
+        """
+        Build one ``NonlinearConstraint`` per item whose policy has a
+        ``service_level_target > 0``.
+
+        Constraint for item *i*::
+
+            g_i(Q) = mean(Q_i * yield_i >= demand_i) - sl_target >= 0
+
+        The closure captures ``idx`` and ``target`` by value via the inner
+        ``_make`` helper to avoid the classic loop-variable aliasing bug.
+        No analytic Jacobian is provided — scipy uses finite differences.
+        """
+        assert self._demand_matrix is not None and self._yield_matrix is not None
+        constraints: list[NonlinearConstraint] = []
+        for i, (item, _) in enumerate(self.problems):
+            policy = self.policies.get(item.name)
+            sl_target: float = getattr(policy, "service_level_target", 0.0)
+            if policy is None or sl_target <= 0.0:
+                continue
+
+            def _make(idx: int, target: float) -> NonlinearConstraint:
+                def g(Q: np.ndarray) -> float:
+                    q_eff = Q[idx] * self._yield_matrix[idx]  # type: ignore[index]
+                    return float(np.mean(q_eff >= self._demand_matrix[idx])) - target  # type: ignore[index]
+
+                return NonlinearConstraint(g, lb=0.0, ub=np.inf)
+
+            constraints.append(_make(i, sl_target))
+        return constraints
