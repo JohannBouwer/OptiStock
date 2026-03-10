@@ -25,6 +25,7 @@ from .forecasting.linear_regressors import BayesTimeSeries
 from .forecasting.state_space import UnivariateSSM
 from .forecasting.mix_media_models import MediaMixModel
 from .items import Item
+from .inventory_policy import InventoryPolicy
 from .solvers import ForecastSolver
 from .distributions.yield_distributions import YieldDistribution, PerfectYield
 from .plot_suite.single_item import plot_single_item_analysis
@@ -91,10 +92,17 @@ class StockKeep:
         Name of the date column.  Default ``"date"``.
     item_col : str
         Name of the item identifier column.  Default ``"item"``.
+    policies : dict[str, InventoryPolicy], optional
+        Maps item name → :class:`InventoryPolicy` instance.  When provided
+        for an item the policy overrides the user-supplied time horizon
+        with ``policy.effective_horizon(item.Lead_time)`` and adds a
+        per-item service-level ``NonlinearConstraint`` to the trust-region
+        solver (if ``service_level_target > 0``).  Items without an entry
+        are unaffected.
     """
 
     # Core columns that should *not* be treated as constraint coefficients
-    _CORE_COLS = {"name", "cost_price", "selling_price", "salvage_value"}
+    _CORE_COLS = {"name", "cost_price", "selling_price", "salvage_value", "lead_time"}
 
     def __init__(
         self,
@@ -106,6 +114,7 @@ class StockKeep:
         target: str = "sales",
         date_col: str = "date",
         item_col: str = "item",
+        policies: dict[str, InventoryPolicy] | None = None,
     ):
         self.histories = histories.copy()
         self._item_df = item_configs.copy()
@@ -114,12 +123,14 @@ class StockKeep:
         self.target = target
         self.date_col = date_col
         self.item_col = item_col
+        self.policies: dict[str, InventoryPolicy] = policies or {}
 
         self.items: list[Item] = self._create_items(yield_profiles or {})
 
         self.trained_forecasters: dict[str, BaseForecaster] = {}
         self.holdout_data: dict[str, tuple[pd.DataFrame, str]] = {}
         self.allocation: dict[str, int] | None = None
+        self.net_allocation: dict[str, int] | None = None
         self.solver: ForecastSolver | None = None
         self._run_start: str | None = None
         self._run_end: str | None = None
@@ -410,16 +421,26 @@ class StockKeep:
 
             df_item[self.date_col] = pd.to_datetime(df_item[self.date_col])
 
+            policy = self.policies.get(item.name)
             if mode == "holdout":
                 train_df, holdout_df, split_date, max_date = self._date_prep(df_item, days)
                 start_dt = split_date
-                end_dt = max_date
+                if policy is not None:
+                    horizon = policy.effective_horizon(item.Lead_time)
+                    opt_end = start_dt + pd.Timedelta(days=horizon - 1)
+                    end_dt = min(opt_end, max_date)
+                else:
+                    end_dt = max_date
             else:  # production
                 train_df = df_item.copy()
                 holdout_df = None
                 max_date = df_item[self.date_col].max()
                 start_dt = max_date + pd.Timedelta(days=1)
-                end_dt = max_date + pd.Timedelta(days=days)
+                if policy is not None:
+                    horizon = policy.effective_horizon(item.Lead_time)
+                    end_dt = start_dt + pd.Timedelta(days=horizon - 1)
+                else:
+                    end_dt = max_date + pd.Timedelta(days=days)
 
             start_dts.append(start_dt)
             end_dts.append(end_dt)
@@ -458,6 +479,29 @@ class StockKeep:
         start_str = str(global_start.date())
         end_str = str(global_end.date())
 
+        # Warn when mixed effective horizons cause clamping
+        if self.policies:
+            clamped = [
+                item.name
+                for item in self.items
+                if self.policies.get(item.name) is not None
+                and (
+                    global_start
+                    + pd.Timedelta(
+                        days=self.policies[item.name].effective_horizon(item.Lead_time) - 1
+                    )
+                )
+                > global_end
+            ]
+            if clamped:
+                warnings.warn(
+                    f"Effective horizon was clamped to {global_end.date()} for items: "
+                    f"{clamped}. Consider running policy groups with different horizons "
+                    "separately.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
         solver = ForecastSolver(
             problems,
             objective=objective,
@@ -465,17 +509,25 @@ class StockKeep:
             cvar_alpha=cvar_alpha,
             cvar_lambda=cvar_lambda,
             risk_aversion=risk_aversion,
+            policies=self.policies,
         )
         allocation = solver.solve(start_str, end_str)
 
+        net_allocation = {
+            name: (self.policies[name].net_order(qty) if name in self.policies else qty)
+            for name, qty in allocation.items()
+        }
+
         self.solver = solver
         self.allocation = allocation
+        self.net_allocation = net_allocation
         self._run_start = start_str
         self._run_end = end_str
         self._mode = mode
 
         result: dict[str, Any] = {
             "allocation": allocation,
+            "net_allocation": net_allocation,
             "solver_summary": solver.summary(),
             "period": (start_str, end_str),
             "mode": mode,
@@ -512,6 +564,7 @@ class StockKeep:
             cp = float(row["cost_price"])
             sp = float(row["selling_price"])
             sv = float(row["salvage_value"]) if "salvage_value" in self._item_df.columns else 0.0
+            lt = int(row["lead_time"]) if "lead_time" in self._item_df.columns else 0
             yd = yield_profiles.get(name, PerfectYield())
 
             constraints = {
@@ -525,6 +578,7 @@ class StockKeep:
                 cost_price=cp,
                 selling_price=sp,
                 salvage_value=sv,
+                Lead_time=lt,
                 constraints=constraints,
                 yield_distribution=yd,
             ))
