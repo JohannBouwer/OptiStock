@@ -2,7 +2,7 @@
 Module for family of linear bayes regressors
 """
 
-from typing import Optional
+from typing import Optional, Union
 
 import pymc as pm
 import pymc_bart as pmb
@@ -27,10 +27,16 @@ class BayesTimeSeries(BaseForecaster):
         data: pd.DataFrame,
         target_col: str = "sales",
         seasonal_config: dict = default_seasonal_config,
+        stockout_dates: Optional[Union[pd.DatetimeIndex, pd.Series]] = None,
     ) -> None:
         self.data = data
         self.target_col = target_col
         self.seasonal_config = seasonal_config
+        self.stockout_dates = (
+            pd.DatetimeIndex(pd.to_datetime(stockout_dates))
+            if stockout_dates is not None else None
+        )
+        self._upper_bound_scaled = None
         self.model = None
         self.idata = None
         self.forecast_idata = None
@@ -86,6 +92,22 @@ class BayesTimeSeries(BaseForecaster):
         self.max_scaler = df[target].max()
         df[target] = df[target].div(self.max_scaler)
 
+        # Build censoring upper bound in scaled space (np.inf = uncensored)
+        if self.stockout_dates is not None:
+            train_dates = pd.DatetimeIndex(pd.to_datetime(df[date_col]))
+            is_stockout = train_dates.isin(self.stockout_dates)
+            missing = self.stockout_dates.difference(train_dates)
+            if len(missing):
+                import warnings
+                warnings.warn(
+                    f"{len(missing)} stockout_dates not in training data and will be ignored.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            self._upper_bound_scaled = np.where(
+                is_stockout, df[target].to_numpy(dtype=float), np.inf
+            )
+
         # set up time and fourier modes
         t = np.arange(len(df))
         fourier_X, self.fourier_names = self._get_fourier_matrix(t)
@@ -108,7 +130,12 @@ class BayesTimeSeries(BaseForecaster):
                 "fourier_X", fourier_X, dims=("time", "fourier_feature")
             )
             events_shared = pm.Data("event_X", self.event_X, dims=("time", "event"))
-            y_obs = pm.Data("y_obs", df[target].values, dims="time")
+            y_obs = pm.Data("y_obs", df[target].to_numpy(dtype=float), dims="time")
+            upper_bound = None
+            if self.stockout_dates is not None:
+                upper_bound = pm.Data(
+                    "upper_bound", self._upper_bound_scaled, dims="time"
+                )
 
             # Create Variables and priors
             intercept = pm.HalfNormal(
@@ -153,13 +180,23 @@ class BayesTimeSeries(BaseForecaster):
                 dims="time",
             )
 
-            pm.Normal(
-                "y",
-                mu=mu,
-                sigma=sigma,
-                observed=y_obs,
-                dims="time",
-            )
+            if self.stockout_dates is not None:
+                pm.Censored(
+                    "y",
+                    dist=pm.Normal.dist(mu=mu, sigma=sigma),
+                    lower=None,
+                    upper=upper_bound,
+                    observed=y_obs,
+                    dims="time",
+                )
+            else:
+                pm.Normal(
+                    "y",
+                    mu=mu,
+                    sigma=sigma,
+                    observed=y_obs,
+                    dims="time",
+                )
 
             self.idata = pm.sample(
                 samples, chain=chain, tune=1000, target_accept=0.95, sampler="numpyro"
@@ -208,15 +245,15 @@ class BayesTimeSeries(BaseForecaster):
             )
 
         with self.model:
-            pm.set_data(
-                {
-                    "t": t_future,
-                    "fourier_X": fourier_X_future,
-                    "event_X": event_X_future,
-                    "y_obs": np.zeros(n_forecast),
-                },
-                coords={"time": df_future[date_col]},
-            )
+            set_data_dict = {
+                "t": t_future,
+                "fourier_X": fourier_X_future,
+                "event_X": event_X_future,
+                "y_obs": np.zeros(n_forecast),
+            }
+            if self.stockout_dates is not None:
+                set_data_dict["upper_bound"] = np.full(n_forecast, np.inf)
+            pm.set_data(set_data_dict, coords={"time": df_future[date_col]})
             self.forecast_idata = pm.sample_posterior_predictive(
                 self.idata,
                 predictions=True,
