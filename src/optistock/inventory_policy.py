@@ -1,16 +1,24 @@
 """
-Inventory policy layer between demand forecasters and the newsvendor solver.
+Inventory policy layer — DEPRECATED.
 
-An ``InventoryPolicy`` translates operational parameters (review cadence,
-service targets, current stock levels) into bounds and horizon adjustments
-consumed by ``ForecastSolver``.
-
-Subclasses implement policy-specific logic for the planning horizon and
-service-level floor; universal inventory accounting (on-hand, on-order,
-net order calculation) lives on the ABC.
+.. deprecated::
+    ``optistock.inventory_policy`` is deprecated and will be removed in v0.2.0.
+    Use :class:`~optistock.PeriodicOrderUpTo`, :class:`~optistock.PeriodicBaseStock`,
+    :class:`~optistock.ContinuousFixedQuantity`, or
+    :class:`~optistock.ContinuousOrderUpTo` from ``optistock.stockkeep`` instead.
 """
 
 from __future__ import annotations
+
+import warnings as _warnings
+
+_warnings.warn(
+    "optistock.inventory_policy is deprecated and will be removed in v0.2.0. "
+    "Use PeriodicOrderUpTo, PeriodicBaseStock, ContinuousFixedQuantity, or "
+    "ContinuousOrderUpTo from optistock.stockkeep instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 from abc import ABC, abstractmethod
 from typing import Literal

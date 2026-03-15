@@ -29,7 +29,6 @@ import warnings
 from scipy.optimize import LinearConstraint, NonlinearConstraint, minimize, minimize_scalar
 
 from .forecasting.base import BaseForecaster
-from .inventory_policy import InventoryPolicy
 from .items import Item
 
 
@@ -118,8 +117,17 @@ class ForecastSolver(Solver):
         cvar_alpha: float = 0.10,
         cvar_lambda: float = 0.50,
         risk_aversion: float = 0.0,
-        policies: dict[str, InventoryPolicy] | None = None,
+        lower_bounds: dict[str, float] | None = None,
+        service_targets: dict[str, float] | None = None,
+        policies=None,  # deprecated — use lower_bounds + service_targets
     ):
+        if policies is not None:
+            warnings.warn(
+                "The 'policies' parameter is deprecated and will be removed in v0.2.0. "
+                "Use 'lower_bounds' and 'service_targets' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         if not isinstance(problems, list):
             problems = [problems]
         self.problems = problems
@@ -128,34 +136,52 @@ class ForecastSolver(Solver):
         self.cvar_alpha = cvar_alpha
         self.cvar_lambda = cvar_lambda
         self.risk_aversion = risk_aversion
-        self.policies: dict[str, InventoryPolicy] = policies or {}
+        self.lower_bounds: dict[str, float] = lower_bounds or {}
+        self.service_targets: dict[str, float] = service_targets or {}
+        self._legacy_policies = policies or {}
 
         self.allocation: dict[str, int] | None = None
         self.shadow_prices: dict[str, float] = {}
 
-        # Populated by solve()
+        # Populated by pull_demand() / solve()
         self._demand_matrix: np.ndarray | None = None  # (n_items, n_samples)
         self._yield_matrix: np.ndarray | None = None  # (n_items, n_samples)
 
-    def solve(self, start_date: str, end_date: str) -> dict[str, int]:
+    def pull_demand(self, start_date: str, end_date: str) -> dict[str, np.ndarray]:
         """
-        Pull demand samples from each forecaster then optimise stock quantities.
-
-        The horizon ``[start_date, end_date]`` is forwarded directly to
-        ``forecaster.get_demand_distribution``, which should return the
-        *total* demand over that window per posterior draw.
+        Pull and cache demand samples from each forecaster.
 
         Parameters
         ----------
         start_date, end_date : str
-            Planning horizon (any format accepted by pandas).
+            Planning horizon forwarded to ``forecaster.get_demand_distribution``.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            Per-item 1-D demand sample arrays.
+        """
+        self._demand_matrix = self._pull_demand(start_date, end_date)
+        return {
+            self.problems[i][0].name: self._demand_matrix[i]
+            for i in range(len(self.problems))
+        }
+
+    def optimize(self) -> dict[str, int]:
+        """
+        Optimise stock quantities using previously pulled demand samples.
+
+        Must be called after ``pull_demand``.  Reads ``self.lower_bounds`` and
+        ``self.service_targets`` (set externally before calling when using the
+        new API from ``BaseStockKeep``).
 
         Returns
         -------
         dict[str, int]
             Optimal quantities keyed by item name.
         """
-        self._demand_matrix = self._pull_demand(start_date, end_date)
+        if self._demand_matrix is None:
+            raise RuntimeError("Call pull_demand() before optimize().")
         n_samples = self._demand_matrix.shape[1]
         n_items = len(self.problems)
 
@@ -172,6 +198,23 @@ class ForecastSolver(Solver):
             self.problems[i][0].name: int(max(0, quantities[i])) for i in range(n_items)
         }
         return self.allocation
+
+    def solve(self, start_date: str, end_date: str) -> dict[str, int]:
+        """
+        Pull demand samples then optimise stock quantities (combined).
+
+        Parameters
+        ----------
+        start_date, end_date : str
+            Planning horizon (any format accepted by pandas).
+
+        Returns
+        -------
+        dict[str, int]
+            Optimal quantities keyed by item name.
+        """
+        self.pull_demand(start_date, end_date)
+        return self.optimize()
 
     def get_profit(self, allocation: dict[str, int] | None = None) -> float:
         """
@@ -344,6 +387,20 @@ class ForecastSolver(Solver):
         rho = sigma * (1.0 - r) / r
         return float(np.mean(np.exp(-profits / rho)))
 
+    def _resolve_lower_bound(self, item: Item, demand: np.ndarray) -> float:
+        """Lower bound for item: new API (lower_bounds) takes precedence over deprecated policies."""
+        if self.lower_bounds:
+            return self.lower_bounds.get(item.name, 0.0)
+        policy = self._legacy_policies.get(item.name)
+        return policy.min_quantity(demand) if policy is not None else 0.0
+
+    def _resolve_service_target(self, item: Item) -> float:
+        """Service target for item: new API (service_targets) takes precedence over deprecated policies."""
+        if self.service_targets:
+            return self.service_targets.get(item.name, 0.0)
+        policy = self._legacy_policies.get(item.name)
+        return getattr(policy, "service_level_target", 0.0) if policy is not None else 0.0
+
     def _solve_scalar(self) -> np.ndarray:
         """Single-item, unconstrained optimization via minimize_scalar."""
         assert self._demand_matrix is not None
@@ -351,8 +408,7 @@ class ForecastSolver(Solver):
         upper = float(np.percentile(demand, 99.9)) * 2 + 1
 
         item = self.problems[0][0]
-        policy = self.policies.get(item.name)
-        lower = policy.min_quantity(demand) if policy is not None else 0.0
+        lower = self._resolve_lower_bound(item, demand)
 
         result = minimize_scalar(
             lambda q: self._objective_fn(np.array([q])),
@@ -375,11 +431,10 @@ class ForecastSolver(Solver):
             ]
         )
 
-        # Policy-aware bounds and warm-start floor
+        # Bounds and warm-start floor
         bounds = []
         for i, (item, _) in enumerate(self.problems):
-            policy = self.policies.get(item.name)
-            lb = policy.min_quantity(self._demand_matrix[i]) if policy is not None else 0.0
+            lb = self._resolve_lower_bound(item, self._demand_matrix[i])
             bounds.append((lb, None))
             x0[i] = max(x0[i], lb)
 
@@ -443,9 +498,8 @@ class ForecastSolver(Solver):
         assert self._demand_matrix is not None and self._yield_matrix is not None
         constraints: list[NonlinearConstraint] = []
         for i, (item, _) in enumerate(self.problems):
-            policy = self.policies.get(item.name)
-            sl_target: float = getattr(policy, "service_level_target", 0.0)
-            if policy is None or sl_target <= 0.0:
+            sl_target: float = self._resolve_service_target(item)
+            if sl_target <= 0.0:
                 continue
 
             def _make(idx: int, target: float) -> NonlinearConstraint:
