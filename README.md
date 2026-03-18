@@ -14,8 +14,11 @@ A Python framework for solving inventory optimization problems. This library goe
 5. [State Space Models](#state-space-models)
 6. [Marketing Mix Models](#marketing-mix-models)
 7. [The ForecastSolver](#the-forecastsolver)
-8. [The StockKeep Orchestrator](#the-stockkeep-orchestrator)
-9. [Inventory Policies](#inventory-policies)
+8. [Inventory Orchestrators](#inventory-orchestrators)
+   - [PeriodicOrderUpTo (R, S)](#periodicorderupto-r-s)
+   - [PeriodicBaseStock (R, S) with Service Targets](#periodicbasestock-r-s-with-service-targets)
+   - [ContinuousFixedQuantity (s, Q)](#continuousfixedquantity-s-q)
+   - [ContinuousOrderUpTo (s, S)](#continuousorderupto-s-s)
 ---
 
 ## Installation
@@ -69,8 +72,8 @@ uv run python -c "import optistock"
 * **Bayesian Forecasting**: Implements Fourier-based Time Series (`BayesTimeSeries`), Hybrid BART (`BARTBayesTimeSeries`), Hilbert Space Gaussian Processes (`HSGPBayesTimeSeries`), and Bayesian Structural State Space Models (`UnivariateSSM`).
 * **Marketing Mix Models**: Attribution-aware demand modelling with `MediaMixModel` (via pymc-marketing), separating baseline demand from channel spend effects.
 * **Unified Solver Interface**: `ForecastSolver` accepts any fitted `BaseForecaster` and supports single-item and multi-item constrained optimisation from a common API.
-* **End-to-End Orchestration**: The `StockKeep` class manages the entire pipeline — data splitting, forecaster training, demand forecasting, and hold-out validation — for any supported forecaster type.
-* **Inventory Policies**: `ReviewPolicy` translates operational reorder parameters (review cadence, lead time, on-hand stock) into planning horizons and service-level constraints, bridging real-world replenishment cycles with the newsvendor solver.
+* **End-to-End Orchestration**: Four policy-specific orchestrators (`PeriodicOrderUpTo`, `PeriodicBaseStock`, `ContinuousFixedQuantity`, `ContinuousOrderUpTo`) each manage the full pipeline — data splitting, forecaster training, demand forecasting, optimisation, and hold-out validation.
+* **Inventory Policies**: Periodic-review classes solve for optimal order-up-to quantities; continuous-review classes simulate reorder timing via posterior demand scenarios, returning probabilistic stockout distributions and recommended order days.
 * **Stochastic Yield Modeling**: Accounts for supply-chain unreliability using Beta and Discrete yield distributions.
 * **Risk-Aware Solvers**: Optimizes for Expected Profit (`SAA`), Exponential Utility (`Utility`), or Conditional Value at Risk (`CVaR`) to protect against tail-risk stockouts.
 
@@ -78,7 +81,7 @@ uv run python -c "import optistock"
 
 ## Project Structure
 
-* `optistock/stockkeep.py`: The main orchestrator for running multi-item simulations and hold-out tests.
+* `optistock/stockkeep.py`: All inventory orchestrators — `PeriodicOrderUpTo`, `PeriodicBaseStock`, `ContinuousFixedQuantity`, `ContinuousOrderUpTo`, and the shared `BaseStockKeep` engine. (`StockKeep` alias retained here as a deprecated shim.)
 * `optistock/solvers.py`: The unified `ForecastSolver` — pairs `Item` objects with fitted `BaseForecaster` instances to solve for optimal stock quantities.
 * `optistock/items.py`: The `Item` class encapsulating cost structure, constraints, and yield distributions.
 * `optistock/forecasting/`: Bayesian forecasting module:
@@ -86,7 +89,7 @@ uv run python -c "import optistock"
   * `linear_regressors.py`: `BayesTimeSeries`, `BARTBayesTimeSeries`, `HSGPBayesTimeSeries`.
   * `state_space.py`: `UnivariateSSM` — flexible Bayesian structural state space model.
   * `mix_media_models.py`: `MediaMixModel` — Bayesian Marketing Mix Model for sales attribution.
-* `optistock/inventory_policy.py`: `InventoryPolicy` ABC and `ReviewPolicy` — translate reorder parameters into planning horizons and service-level constraints.
+* `optistock/inventory_policy.py`: **Deprecated.** `InventoryPolicy` ABC and `ReviewPolicy` are retained here for one release cycle; migrate to the classes in `stockkeep.py`.
 * `optistock/distributions/`: Probabilistic models for demand (`SampledDemand`, `NormalDemand`, ...) and manufacturing yield (`BetaYield`, `PerfectYield`, ...).
 * `optistock/plot_suite/`: Visualization tools for forecast validation, profit curves, and portfolio analysis.
 
@@ -239,18 +242,24 @@ print(solver.summary())   # includes shadow prices, service level, CVaR
 
 ---
 
-## The StockKeep Orchestrator
+## Inventory Orchestrators
 
-`StockKeep` is the primary entry point for end-to-end inventory planning. It automatically handles training, forecasting, and optimization for a portfolio of items — and supports hold-out validation to evaluate how well your stock decisions would have performed on real data.
+Four policy classes in `optistock.stockkeep` cover the standard textbook replenishment systems. All share the same `run_holdout` / `run` interface and accept the same forecaster, yield-profile, and objective arguments. `item_configs` must always include a `lead_time` column (integer days).
+
+---
+
+### PeriodicOrderUpTo (R, S)
+
+Profit-optimising periodic-review policy. The planning horizon is `lead_time + review_period`. No mandatory service-level floor — the solver maximises expected profit (or CVaR / Utility).
 
 ```python
-from optistock.stockkeep import StockKeep
+from optistock.stockkeep import PeriodicOrderUpTo
 from optistock.forecasting.state_space import UnivariateSSM
 
-# Initialize with long-form history and item config table
-sk = StockKeep(
-    histories=df_history,        # long-format: item, date, sales columns
-    item_configs=df_items,       # columns: name, cost_price, selling_price, salvage_value
+sk = PeriodicOrderUpTo(
+    histories=df_history,        # long-format: item, date, sales
+    item_configs=df_items,       # columns: name, cost_price, selling_price, salvage_value, lead_time
+    review_period=7,
     forecaster_class=UnivariateSSM,
     yield_profiles=yield_map,    # optional: {item_name: YieldDistribution}
 )
@@ -260,28 +269,24 @@ results = sk.run_holdout(
     holdout_days=30,
     objective="Utility",
     risk_aversion=0.3,
-    fit_kwargs={
-        "draws": 1000,
-        "build_model_kwargs": {"seasonal_period": 7},
-    },
+    inventory_state={"Tablet Air": {"on_hand": 80, "on_order": 20}},
+    fit_kwargs={"draws": 1000, "build_model_kwargs": {"seasonal_period": 7}},
 )
 
-print(results["allocation"])     # {item_name: optimal_quantity}
-print(results["metrics"])        # per-item profit, service level, SMAPE, stockout
+print(results["allocation"])     # {item_name: gross optimal quantity}
+print(results["net_allocation"]) # quantity to actually order (net of on-hand + on-order)
+print(results["metrics"])        # per-item profit, service level, SMAPE, stockout flag
 print(sk.summary())              # ForecastSolver diagnostics
 
-# Overlay forecast vs actual holdout sales
-fig, ax = sk.plot_forecast("Tablet Air")
+fig, ax = sk.plot_forecast("Tablet Air")  # forecast vs holdout actuals
 
 ```
 
-### Production Mode
-
-When you are confident in the model, run on the full history to get forward-looking allocations:
+**Production mode** (fit on full history, forecast forward):
 
 ```python
 results = sk.run(
-    forecast_days=30,
+    forecast_days=30,   # accepted for API compatibility; horizon = lead_time + review_period
     objective="SAA",
 )
 print(results["allocation"])
@@ -291,70 +296,86 @@ print(results["period"])         # (start_date, end_date) of the planning horizo
 
 ---
 
-## Inventory Policies
+### PeriodicBaseStock (R, S) with Service Targets
 
-`InventoryPolicy` objects sit between the demand forecaster and the newsvendor solver. They encode real-world replenishment parameters — review cadence, lead time, current stock levels — and translate them into two things the solver needs:
-
-1. **Effective horizon**: how many days of demand the order must cover.
-2. **Service-level floor**: an optional minimum order quantity derived from a cycle-service-level (CSL) target.
-
-The result dictionary from `StockKeep` also contains a `net_allocation` key — the gross optimal quantity minus any stock already on-hand or on-order.
-
-### ReviewPolicy
-
-`ReviewPolicy` implements the classic **periodic-review** replenishment model. The protection interval is `lead_time + review_period`, matching the standard (R, S) textbook formula.
+Same horizon as `PeriodicOrderUpTo`. Items listed in `service_targets` have their order quantity floored to the given cycle-service-level (CSL) quantile of the planning-horizon demand distribution; all other items are pure-profit-optimised.
 
 ```python
-from optistock.inventory_policy import ReviewPolicy
+from optistock.stockkeep import PeriodicBaseStock
 
-policy = ReviewPolicy(
-    review_period=7,           # reorder every 7 days
-    service_level_target=0.95, # enforce 95 % cycle service level
-    on_hand=120,               # units currently in warehouse
-    on_order=50,               # units already ordered, not yet received
-)
-
-# Inspect the inventory position and the net order needed
-print(policy.inventory_position)     # 170 (on_hand + on_order)
-print(policy.net_order(250))         # 80  (gross quantity - inventory position)
-
-```
-
-### Using Policies with StockKeep
-
-Pass a `policies` dict to `StockKeep` to activate policy-aware planning. The key is the item name and the value is any `InventoryPolicy` instance.
-
-```python
-from optistock.stockkeep import StockKeep
-from optistock.inventory_policy import ReviewPolicy
-
-policies = {
-    "Tablet Air": ReviewPolicy(
-        review_period=14,
-        service_level_target=0.90,
-        on_hand=80,
-        on_order=20,
-    ),
-    "Gaming Mouse": ReviewPolicy(
-        review_period=7,
-        service_level_target=0.95,
-    ),
-}
-
-sk = StockKeep(
+sk = PeriodicBaseStock(
     histories=df_history,
-    item_configs=df_items,         # must include a 'lead_time' column
+    item_configs=df_items,
+    review_period=14,
+    service_targets={
+        "Tablet Air":   0.95,   # 95 % CSL floor
+        "Gaming Mouse": 0.90,
+    },
     forecaster_class=BayesTimeSeries,
-    policies=policies,
 )
 
-results = sk.run(forecast_days=30, objective="SAA")
-
-print(results["allocation"])      # gross optimal quantity per item
-print(results["net_allocation"])  # quantity to actually order (net of on-hand + on-order)
+results = sk.run(forecast_days=14, objective="SAA")
+print(results["allocation"])
 
 ```
 
-> **Note:** `item_configs` must contain a `lead_time` column (integer, days) when policies are used. The effective planning horizon for each policy item is then `lead_time + review_period`.
+---
+
+### ContinuousFixedQuantity (s, Q)
+
+Continuous-review fixed-order-quantity policy. An order of size `Q` is placed whenever the inventory position falls to or below reorder point `s`. Instead of computing a single optimal quantity, `run()` simulates demand depletion across all posterior scenarios and returns a distribution of the first day a stockout would occur.
+
+```python
+from optistock.stockkeep import ContinuousFixedQuantity
+
+sk = ContinuousFixedQuantity(
+    histories=df_history,
+    item_configs=df_items,
+    Q={"Tablet Air": 200, "Gaming Mouse": 150},   # fixed order qty per item
+    service_level=0.95,   # quantile used to auto-compute reorder point s
+    forecaster_class=BayesTimeSeries,
+)
+
+results = sk.run(
+    forecast_days=60,
+    inventory_state={"Tablet Air": {"on_hand": 120, "on_order": 0}},
+)
+
+# results["stockout_days"] — {item_name: np.ndarray of first-stockout day per scenario}
+print(sk.report("Tablet Air"))   # 90% HDI statement on when a stockout is expected
+
+fig = sk.plot_stockout_distribution("Tablet Air")
+
+rec = sk.recommended_order_day("Tablet Air", risk_tolerance=0.10)
+print(rec["action"])  # "Order 200 units of 'Tablet Air' by day N ..."
+
+```
+
+---
+
+### ContinuousOrderUpTo (s, S)
+
+Like `ContinuousFixedQuantity` but when the reorder point is triggered the order quantity is `S − inventory_position` rather than a fixed `Q`.
+
+```python
+from optistock.stockkeep import ContinuousOrderUpTo
+
+sk = ContinuousOrderUpTo(
+    histories=df_history,
+    item_configs=df_items,
+    S={"Tablet Air": 500, "Gaming Mouse": 300},   # order-up-to level per item
+    service_level=0.95,
+    forecaster_class=BayesTimeSeries,
+)
+
+results = sk.run(forecast_days=60)
+print(sk.report("Gaming Mouse"))
+
+rec = sk.recommended_order_day("Gaming Mouse", risk_tolerance=0.05)
+print(rec["action"])  # "Top up 'Gaming Mouse' to 300 units by day N ..."
+
+```
+
+> **Migration note:** `StockKeep` (the old class) and `optistock.inventory_policy.ReviewPolicy` are **deprecated** and will be removed in v0.2.0. Replace `StockKeep` with `PeriodicOrderUpTo` or `PeriodicBaseStock`, and pass `inventory_state` directly to `run()` / `run_holdout()` instead of using `ReviewPolicy`.
 
 ---
