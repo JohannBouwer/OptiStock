@@ -3,5 +3,4 @@ from .stockkeep import (
     PeriodicBaseStock,
     ContinuousFixedQuantity,
     ContinuousOrderUpTo,
-    StockKeep,  # deprecated alias — emits DeprecationWarning on use
 )

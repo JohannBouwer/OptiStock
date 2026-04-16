@@ -152,38 +152,3 @@ class SampledDemand(DemandDistribution):
         return count / self.samples.size
 
 
-def demand_aggregator(
-    distributions: list[Union[NormalDemand, SampledDemand]],
-) -> Union[NormalDemand, SampledDemand]:
-    """
-    Aggregates a list of distributions into a total period distribution.
-    Assumes independence between days.
-    """
-    # Check if all are Normal
-    if all(isinstance(d, NormalDemand) for d in distributions):
-        total_mean = sum(d.mean for d in distributions)
-        # Sum of Variances (Sigma^2)
-        total_variance = sum(d.std**2 for d in distributions)
-        total_std = np.sqrt(total_variance)
-        return NormalDemand(total_mean, total_std)
-
-    # Handle Sampled (or mix) by converting all to samples
-    else:
-        n_sims = 10000
-        totals = np.zeros(n_sims)
-
-        for dist in distributions:
-            # Get samples for this specific day
-            if isinstance(dist, SampledDemand):
-                samples = dist.samples
-            else:
-                samples = np.random.normal(dist.mean, dist.std, 10000)
-
-            # Randomly draw for this day (Bootstrapping)
-            # We use replace=True to ensure we can generate enough samples
-            draws = np.random.choice(samples, size=n_sims, replace=True)
-
-            # Add to running total
-            totals += draws
-
-        return SampledDemand(totals)

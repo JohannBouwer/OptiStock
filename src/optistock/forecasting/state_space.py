@@ -445,22 +445,3 @@ class UnivariateSSM(BaseForecaster):
 # TODO: Multivariate model with shared components (e.g. common trend) and cross-series regression effects
 
 
-class MultivariateSSM(BaseForecaster):
-    """
-    Placeholder for future multivariate SSM implementation.
-    """
-
-    def fit(self, target: str, date_col: str) -> InferenceData:
-        pass
-
-    def forecast(self, df_future: pd.DataFrame) -> InferenceData:
-        pass
-
-    def plot_forecast(self) -> tuple:
-        pass
-
-    def plot_components(self) -> tuple:
-        pass
-
-    def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
-        pass

@@ -81,7 +81,7 @@ uv run python -c "import optistock"
 
 ## Project Structure
 
-* `optistock/stockkeep.py`: All inventory orchestrators — `PeriodicOrderUpTo`, `PeriodicBaseStock`, `ContinuousFixedQuantity`, `ContinuousOrderUpTo`, and the shared `BaseStockKeep` engine. (`StockKeep` alias retained here as a deprecated shim.)
+* `optistock/stockkeep.py`: All inventory orchestrators — `PeriodicOrderUpTo`, `PeriodicBaseStock`, `ContinuousFixedQuantity`, `ContinuousOrderUpTo`, and the shared `BaseStockKeep` engine.
 * `optistock/solvers.py`: The unified `ForecastSolver` — pairs `Item` objects with fitted `BaseForecaster` instances to solve for optimal stock quantities.
 * `optistock/items.py`: The `Item` class encapsulating cost structure, constraints, and yield distributions.
 * `optistock/forecasting/`: Bayesian forecasting module:
@@ -89,7 +89,6 @@ uv run python -c "import optistock"
   * `linear_regressors.py`: `BayesTimeSeries`, `BARTBayesTimeSeries`, `HSGPBayesTimeSeries`.
   * `state_space.py`: `UnivariateSSM` — flexible Bayesian structural state space model.
   * `mix_media_models.py`: `MediaMixModel` — Bayesian Marketing Mix Model for sales attribution.
-* `optistock/inventory_policy.py`: **Deprecated.** `InventoryPolicy` ABC and `ReviewPolicy` are retained here for one release cycle; migrate to the classes in `stockkeep.py`.
 * `optistock/distributions/`: Probabilistic models for demand (`SampledDemand`, `NormalDemand`, ...) and manufacturing yield (`BetaYield`, `PerfectYield`, ...).
 * `optistock/plot_suite/`: Visualization tools for forecast validation, profit curves, and portfolio analysis.
 
@@ -375,7 +374,5 @@ rec = sk.recommended_order_day("Gaming Mouse", risk_tolerance=0.05)
 print(rec["action"])  # "Top up 'Gaming Mouse' to 300 units by day N ..."
 
 ```
-
-> **Migration note:** `StockKeep` (the old class) and `optistock.inventory_policy.ReviewPolicy` are **deprecated** and will be removed in v0.2.0. Replace `StockKeep` with `PeriodicOrderUpTo` or `PeriodicBaseStock`, and pass `inventory_state` directly to `run()` / `run_holdout()` instead of using `ReviewPolicy`.
 
 ---
