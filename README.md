@@ -5,12 +5,15 @@
 
 A Python framework for solving inventory optimization problems. This library goes beyond the standard "Order the Mean" approach, offering tools for constrained, stochastic, and risk-aware decision-making in stock supply allocation.
 
+> [!NOTE]
+> **Heads up:** This is a project I completed for my own development / learning. The models work and have been tested, but no claims are made about production-readiness, computational efficiency, or suitability for any particular use case.
+
 ## Table of Contents
 
 1. [Installation](#installation)
 2. [Key Features](#key-features)
 3. [Project Structure](#project-structure)
-4. [Probabilistic Forecasting](#probabilistic-forecasting)
+4. [Probabilistic Forecasting](#probabilistic-demand-forecasting)
 5. [State Space Models](#state-space-models)
 6. [Marketing Mix Models](#marketing-mix-models)
 7. [The ForecastSolver](#the-forecastsolver)
