@@ -79,7 +79,7 @@ The full state vector is just the concatenation of all component states. $T_t$ i
 
 ## Priors and Parameters
 
-The model doesn't learn fixed coefficients — it learns distributions over how the states are initialised and how much they vary. The key parameters are:
+As The model is bayesian it doesn't learn fixed coefficients but rather distributions over how the states are initialised and how much they vary. The key parameters are:
 
 - `initial_*` — where does each state start? (mean of the prior at $t=0$)
 - `sigma_*` — how much does each state drift per time step? The most important design choice.
