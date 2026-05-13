@@ -12,6 +12,11 @@ import arviz as az
 import numpy as np
 import matplotlib.pyplot as plt
 from .base import BaseForecaster
+from .priors import (
+    BARTBayesTimeSeriesPriors,
+    BayesTimeSeriesPriors,
+    HSGPBayesTimeSeriesPriors,
+)
 
 
 default_seasonal_config = {
@@ -28,6 +33,7 @@ class BayesTimeSeries(BaseForecaster):
         target_col: str = "sales",
         seasonal_config: dict = default_seasonal_config,
         stockout_dates: Optional[Union[pd.DatetimeIndex, pd.Series]] = None,
+        priors: Optional[BayesTimeSeriesPriors] = None,
     ) -> None:
         self.data = data
         self.target_col = target_col
@@ -36,6 +42,7 @@ class BayesTimeSeries(BaseForecaster):
             pd.DatetimeIndex(pd.to_datetime(stockout_dates))
             if stockout_dates is not None else None
         )
+        self.priors = priors or BayesTimeSeriesPriors()
         self._upper_bound_scaled = None
         self.model = None
         self.idata = None
@@ -137,33 +144,23 @@ class BayesTimeSeries(BaseForecaster):
                     "upper_bound", self._upper_bound_scaled, dims="time"
                 )
 
-            # Create Variables and priors
-            intercept = pm.HalfNormal(
-                "intercept",
-                sigma=1.0,
-            )
-            growth = pm.Normal(
-                "growth",
-                mu=0.0,
-                sigma=1.0,
-            )
+            # Create Variables and priors (values sourced from self.priors)
+            intercept = self.priors.intercept.build("intercept")
+            growth = self.priors.growth.build("growth")
             trend = pm.Deterministic(
                 "trend",
                 intercept + growth * t_shared,
                 dims="time",
             )
 
-            beta_event = pm.Normal("beta_event", mu=0.0, sigma=0.5, dims="event")
+            beta_event = self.priors.beta_event.build("beta_event", dims="event")
             event_effect = pm.Deterministic(
                 "event_effect", pm.math.dot(events_shared, beta_event), dims="time"
             )
 
             # Seasonality
-            beta_fourier = pm.Laplace(
-                "beta_fourier",
-                mu=0.0,
-                b=1,
-                dims="fourier_feature",
+            beta_fourier = self.priors.beta_fourier.build(
+                "beta_fourier", dims="fourier_feature"
             )
             seasonality = pm.Deterministic(
                 "seasonality",
@@ -172,7 +169,7 @@ class BayesTimeSeries(BaseForecaster):
             )
 
             # Observation model
-            sigma = pm.HalfNormal("sigma", sigma=0.05)
+            sigma = self.priors.sigma.build("sigma")
 
             mu = pm.Deterministic(
                 "mu",
@@ -351,10 +348,12 @@ class BARTBayesTimeSeries(BaseForecaster):
         self,
         data: pd.DataFrame,
         target_col: str = "sales",
+        priors: Optional[BARTBayesTimeSeriesPriors] = None,
     ) -> None:
         self.data = data
         self.len_df = len(data)
         self.target_col = target_col
+        self.priors = priors or BARTBayesTimeSeriesPriors()
         self.model = None
         self.idata = None
         self.forecast_idata = None
@@ -394,15 +393,8 @@ class BARTBayesTimeSeries(BaseForecaster):
             X_shared = pm.Data("X_data", self.X, dims=("time", "feature"))
             y_shared = pm.Data("y_obs", y_scaled, dims="time")
 
-            intercept = pm.HalfNormal(
-                "intercept",
-                sigma=1.0,
-            )
-            growth = pm.Normal(
-                "growth",
-                mu=0.0,
-                sigma=1.0,
-            )
+            intercept = self.priors.intercept.build("intercept")
+            growth = self.priors.growth.build("growth")
             trend = pm.Deterministic(
                 "trend",
                 intercept + growth * X_shared[:, 0],
@@ -411,7 +403,7 @@ class BARTBayesTimeSeries(BaseForecaster):
 
             bart = pmb.BART("bart", X_shared[:, 1:], y_shared, dims="time", m=trees)
 
-            sigma = pm.HalfNormal("sigma", sigma=0.1)
+            sigma = self.priors.sigma.build("sigma")
 
             mu = pm.Deterministic("mu", bart + trend, dims=("time"))
 
@@ -526,12 +518,18 @@ class HSGPBayesTimeSeries(BaseForecaster):
     """
 
     def __init__(
-        self, data: pd.DataFrame, target_col: str = "sales", m: int = 20, L: float = 1.5
+        self,
+        data: pd.DataFrame,
+        target_col: str = "sales",
+        m: int = 20,
+        L: float = 1.5,
+        priors: Optional[HSGPBayesTimeSeriesPriors] = None,
     ) -> None:
         self.data = data
         self.target_col = target_col
         self.m = m  # Number of basis functions
         self.L = L  # Boundary factor
+        self.priors = priors or HSGPBayesTimeSeriesPriors()
         self.model = None
         self.idata = None
         self.forecast_idata = None
@@ -556,18 +554,23 @@ class HSGPBayesTimeSeries(BaseForecaster):
             y_obs = pm.Data("y_obs", y_scaled, dims="time")
 
             # HSGP Hyperparameters
-            ell = pm.InverseGamma("ell", mu=0.5, sigma=0.2)  # Lengthscale
-            eta = pm.Exponential("eta", lam=1.0)  # Amplitude
+            ell = self.priors.ell.build("ell")
+            eta = self.priors.eta.build("eta")
 
             # Covariance and HSGP Prior
             cov_func = eta**2 * pm.gp.cov.ExpQuad(1, ls=ell)
             gp = pm.gp.HSGP(m=[self.m], L=[self.L], cov_func=cov_func)
             phi = gp.prior("phi", X=t_shared, dims="time")
 
-            intercept = pm.Normal("intercept", mu=y_scaled.mean(), sigma=0.5)
+            # If the user didn't pin `mu`, center the intercept on the data mean.
+            intercept_params = dict(self.priors.intercept.params)
+            intercept_params.setdefault("mu", float(y_scaled.mean()))
+            intercept = getattr(pm, self.priors.intercept.distribution)(
+                "intercept", **intercept_params
+            )
             mu = pm.Deterministic("mu", intercept + phi, dims="time")
 
-            sigma = pm.HalfNormal("sigma", sigma=0.1)
+            sigma = self.priors.sigma.build("sigma")
             pm.Normal("y", mu=mu, sigma=sigma, observed=y_obs, dims="time")
 
             self.idata = pm.sample(samples, chains=chain, sampler="numpyro")

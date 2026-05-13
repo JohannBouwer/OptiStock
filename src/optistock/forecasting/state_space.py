@@ -13,6 +13,7 @@ import xarray as xr
 from typing import Optional
 
 from .base import BaseForecaster
+from .priors import UnivariateSSMPriors
 
 
 class UnivariateSSM(BaseForecaster):
@@ -48,11 +49,13 @@ class UnivariateSSM(BaseForecaster):
         data: pd.DataFrame,
         target_col: str,
         exog: Optional[dict[str, bool]] = None,
+        priors: Optional[UnivariateSSMPriors] = None,
     ):
         self.data = data.copy()
         self.target = target_col
         self.y = self.data[self.target]
         self.exog = exog or {}
+        self.priors = priors or UnivariateSSMPriors()
         self.max_scaler: float = 1.0  # set in fit()
 
         self._seasonal_name: Optional[str] = None
@@ -122,26 +125,27 @@ class UnivariateSSM(BaseForecaster):
     def _register_priors(self) -> None:
         """
         Dynamically register PyMC priors for every parameter declared by the
-        built SSM.  Prior families follow the naming conventions used by
-        pymc-extras structural models:
+        built SSM. Prior families follow the naming conventions used by
+        pymc-extras structural models, and each family's distribution +
+        parameters is sourced from ``self.priors``:
 
         ================  =====================================================
-        Prefix / name     Prior
+        Prefix / name     Priors family field
         ================  =====================================================
-        ``P0``            Diagonal Gamma (scale of initial covariance)
-        ``initial_*``     Normal (initial state distribution)
-        ``sigma_obs``     HalfNormal (measurement noise — typically small)
-        ``sigma_beta_*``  Gamma (innovation variance for regression coefs)
-        ``sigma_*``       Gamma (process noise — trend, seasonal)
-        ``beta_*``        HalfNormal (regression coefficient magnitude)
-        ``params_*``      Normal (initial seasonal amplitudes)
+        ``P0``            ``initial_state_cov``
+        ``initial_*``     ``initial_state``
+        ``sigma_obs``     ``observation_noise``
+        ``sigma_beta_*``  ``regression_innovation``
+        ``sigma_*``       ``process_noise``
+        ``beta_*``        ``regression_beta``
+        ``params_*``      ``seasonal_amplitude``
+        ``sigma_seasonal``  ``seasonal_innovation`` (scalar; injected post-loop)
         ``data_*``        Skipped here; registered separately in ``fit``
         ================  =====================================================
 
         Note: pymc-extras does not include scalar (undimensioned) sigma parameters
-        in ``param_dims``.  Those are registered explicitly after the loop.
+        in ``param_dims``. Those are registered explicitly after the loop.
         """
-        # All priors are specified in the scaled [0, 1] space.
         meas_sigma = f"sigma_{self._MEAS_ERROR_NAME}"
         registered: set[str] = set()
 
@@ -152,31 +156,24 @@ class UnivariateSSM(BaseForecaster):
             dim_kwargs = {"dims": dims} if dims else {}
 
             if param == "P0":
-                # Initial state covariance — small in [0, 1] space
-                P0_diag = pm.Gamma("P0_diag", alpha=2, beta=10)  # noqa: F841
+                P0_diag = self.priors.initial_state_cov.build("P0_diag")  # noqa: F841
                 pm.Deterministic(  # noqa: F841
                     "P0",
                     pt.eye(self.model.k_states) * P0_diag,
                     dims=dims,
                 )
             elif param.startswith("initial_"):
-                # Initial states are in scaled [0, 1] units
-                pm.Normal(param, mu=0.5, sigma=1.0, **dim_kwargs)  # noqa: F841
+                self.priors.initial_state.build(param, **dim_kwargs)
             elif param == meas_sigma:
-                # Measurement noise — tight prior for [0, 1] scaled data
-                pm.HalfNormal(param, sigma=0.05)  # noqa: F841
+                self.priors.observation_noise.build(param)
             elif param.startswith("sigma_beta_"):
-                # Innovation variance for time-varying regression coefs
-                pm.Gamma(param, alpha=2, beta=50, **dim_kwargs)  # noqa: F841
+                self.priors.regression_innovation.build(param, **dim_kwargs)
             elif param.startswith("sigma_"):
-                # Process noise (level, slope, seasonal) in [0, 1] space
-                pm.Gamma(param, alpha=2, beta=50, **dim_kwargs)  # noqa: F841
+                self.priors.process_noise.build(param, **dim_kwargs)
             elif param.startswith("beta_"):
-                # Regression coefficients: exog scale unknown, keep relatively wide
-                pm.HalfNormal(param, sigma=3, **dim_kwargs)  # noqa: F841
+                self.priors.regression_beta.build(param, **dim_kwargs)
             elif param.startswith("params_"):
-                # Initial seasonal amplitudes in [0, 1] space
-                pm.Normal(param, sigma=0.5, **dim_kwargs)  # noqa: F841
+                self.priors.seasonal_amplitude.build(param, **dim_kwargs)
             else:
                 continue
             registered.add(param)
@@ -184,7 +181,7 @@ class UnivariateSSM(BaseForecaster):
         # pymc-extras omits scalar sigma params from param_dims; register them here
         # if the loop above didn't already handle them.
         if meas_sigma not in registered:
-            pm.HalfNormal(meas_sigma, sigma=0.05)  # noqa: F841
+            self.priors.observation_noise.build(meas_sigma)
 
         seasonal_sigma = f"sigma_{self._seasonal_name}" if self._seasonal_name else None
         if (
@@ -192,7 +189,7 @@ class UnivariateSSM(BaseForecaster):
             and seasonal_sigma not in registered
             and self._seasonal_innovations
         ):
-            pm.Gamma(seasonal_sigma, alpha=2, beta=50)  # noqa: F841
+            self.priors.seasonal_innovation.build(seasonal_sigma)
 
     def fit(self, sampler: str = "nutpie", **sampler_kwargs) -> None:
         """

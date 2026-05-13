@@ -5,11 +5,27 @@ import xarray as xr
 import pandas as pd
 import numpy as np
 
+from .priors import BasePriors
+
 
 class BaseForecaster(ABC):
     """
     Abstract Base Class for item demand forecasting models.
     """
+
+    priors: BasePriors
+
+    def describe_priors(self) -> dict[str, dict]:
+        """
+        Print and return a structured description of every prior used by the model.
+
+        Returns
+        -------
+        dict
+            ``{prior_name: {"distribution": str, "params": dict, "description": str}}``
+        """
+        print(self.priors)
+        return self.priors.to_dict()
 
     @abstractmethod
     def fit(self, target: str, date_col: str) -> az.InferenceData:
