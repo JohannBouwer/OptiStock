@@ -119,6 +119,63 @@ class BayesTimeSeriesPriors(BasePriors):
 
 
 @dataclass
+class HierarchicalBayesTimeSeriesPriors(BasePriors):
+    """
+    Priors for :class:`HierarchicalBayesTimeSeries` — a multi-item version of
+    :class:`BayesTimeSeries` where each item has its own coefficients drawn
+    from a population-level (hyper) distribution.
+
+    Naming convention: ``<coef>_mu`` and ``<coef>_sigma`` are the hyper-priors
+    on the population mean and spread of ``<coef>``. The per-item ``<coef>[i]``
+    is then ``Normal(<coef>_mu, <coef>_sigma)`` (non-centered internally).
+
+    For vector-valued coefficients (``beta_fourier``, ``beta_event``) the
+    hyper-priors are themselves vector-valued — one ``mu`` and ``sigma`` per
+    Fourier feature or per event — so items are partially pooled separately
+    for each feature/event.
+
+    All values live in scaled [0, 1] space.
+    """
+
+    intercept_mu: Prior = field(default_factory=lambda: Prior(
+        "Normal", {"mu": 0.5, "sigma": 0.5},
+        "Population mean of per-item baseline level",
+    ))
+    intercept_sigma: Prior = field(default_factory=lambda: Prior(
+        "HalfNormal", {"sigma": 0.3},
+        "Population spread of per-item baseline level",
+    ))
+    growth_mu: Prior = field(default_factory=lambda: Prior(
+        "Normal", {"mu": 0.0, "sigma": 0.05},
+        "Population mean of per-item trend slope",
+    ))
+    growth_sigma: Prior = field(default_factory=lambda: Prior(
+        "HalfNormal", {"sigma": 0.05},
+        "Population spread of per-item trend slope",
+    ))
+    beta_fourier_mu: Prior = field(default_factory=lambda: Prior(
+        "Normal", {"mu": 0.0, "sigma": 0.3},
+        "Population mean of per-item Fourier coefficients (per feature)",
+    ))
+    beta_fourier_sigma: Prior = field(default_factory=lambda: Prior(
+        "HalfNormal", {"sigma": 0.3},
+        "Population spread of per-item Fourier coefficients (per feature)",
+    ))
+    beta_event_mu: Prior = field(default_factory=lambda: Prior(
+        "Normal", {"mu": 0.0, "sigma": 0.3},
+        "Population mean of per-item event effect (per event)",
+    ))
+    beta_event_sigma: Prior = field(default_factory=lambda: Prior(
+        "HalfNormal", {"sigma": 0.3},
+        "Population spread of per-item event effect (per event)",
+    ))
+    sigma: Prior = field(default_factory=lambda: Prior(
+        "HalfNormal", {"sigma": 0.05},
+        "Shared observation noise (not pooled across items)",
+    ))
+
+
+@dataclass
 class BARTBayesTimeSeriesPriors(BasePriors):
     """Priors for :class:`BARTBayesTimeSeries`. BART tree count ``m`` stays a constructor arg."""
 

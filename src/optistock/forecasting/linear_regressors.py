@@ -15,6 +15,7 @@ from .base import BaseForecaster
 from .priors import (
     BARTBayesTimeSeriesPriors,
     BayesTimeSeriesPriors,
+    HierarchicalBayesTimeSeriesPriors,
     HSGPBayesTimeSeriesPriors,
 )
 
@@ -40,7 +41,8 @@ class BayesTimeSeries(BaseForecaster):
         self.seasonal_config = seasonal_config
         self.stockout_dates = (
             pd.DatetimeIndex(pd.to_datetime(stockout_dates))
-            if stockout_dates is not None else None
+            if stockout_dates is not None
+            else None
         )
         self.priors = priors or BayesTimeSeriesPriors()
         self._upper_bound_scaled = None
@@ -88,7 +90,7 @@ class BayesTimeSeries(BaseForecaster):
         self,
         target: str = "sales",
         date_col: str = "date",
-        chain=4,
+        chains=4,
         samples=1000,
     ):
         df = self.data.copy()
@@ -106,6 +108,7 @@ class BayesTimeSeries(BaseForecaster):
             missing = self.stockout_dates.difference(train_dates)
             if len(missing):
                 import warnings
+
                 warnings.warn(
                     f"{len(missing)} stockout_dates not in training data and will be ignored.",
                     UserWarning,
@@ -196,7 +199,7 @@ class BayesTimeSeries(BaseForecaster):
                 )
 
             self.idata = pm.sample(
-                samples, chain=chain, tune=1000, target_accept=0.95, sampler="numpyro"
+                samples, chains=chains, tune=1000, target_accept=0.95, sampler="numpyro"
             )
 
             self.posterior_predictive = pm.sample_posterior_predictive(
@@ -641,3 +644,349 @@ class HSGPBayesTimeSeries(BaseForecaster):
             time=slice(start_date, end_date)
         )
         return (demands.sum(dim="time") * self.max_scaler).to_dataset(name="demand")
+
+
+class HierarchicalBayesTimeSeries(BayesTimeSeries):
+    """
+    Multi-item Bayesian time-series forecaster with partial pooling across
+    items via hierarchical (hyper) priors.
+
+    Each item has its own ``intercept``, ``growth``, ``beta_fourier`` and
+    ``beta_event`` coefficients, drawn from a shared population-level
+    distribution whose mean and spread (hyper-priors) are themselves learned
+    from data. Observation noise ``sigma`` is shared across items.
+
+    Input is **wide-format**: one ``date`` column plus one numeric column per
+    item. Items are inferred as all non-``date`` columns if not supplied
+    explicitly.
+
+    The model uses a non-centered parameterisation for every per-item
+    coefficient to avoid funnel pathologies under HMC.
+    """
+
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        date_col: str = "date",
+        items: Optional[list] = None,
+        seasonal_config: dict = default_seasonal_config,
+        priors: Optional[HierarchicalBayesTimeSeriesPriors] = None,
+    ) -> None:
+        self.data = data.copy()
+        self.date_col = date_col
+        if items is None:
+            items = [c for c in data.columns if c != date_col]
+        self.items = list(items)
+        self.seasonal_config = seasonal_config
+        self.priors = priors or HierarchicalBayesTimeSeriesPriors()
+        self.model = None
+        self.idata = None
+        self.forecast_idata = None
+        self.fourier_names = None
+        self.event_names = None
+        self.event_X = None
+        self.events_input = None
+        self.max_scaler = None  # pd.Series indexed by item
+
+    def create_events(self, events: dict, date_col: Optional[str] = None):
+        """
+        Events apply to every item (one shared indicator matrix), but each
+        item learns its own coefficient via the hierarchical ``beta_event``.
+        """
+        date_col = date_col or self.date_col
+        df = self.data.copy()
+        df[date_col] = pd.to_datetime(df[date_col])
+        dates = df[date_col]
+        self.events_input = events
+        event_indicators = {
+            name: dates.isin(pd.to_datetime(date_list)).astype(int)
+            for name, date_list in events.items()
+        }
+        self.event_names = sorted(event_indicators.keys())
+        self.event_X = np.column_stack(
+            [event_indicators[name] for name in self.event_names]
+        )
+        return self
+
+    def fit(
+        self,
+        date_col: Optional[str] = None,
+        chains: int = 4,
+        samples: int = 1000,
+    ) -> az.InferenceData:
+        date_col = date_col or self.date_col
+        df = self.data.copy()
+        df[date_col] = pd.to_datetime(df[date_col])
+
+        # handle ragged data
+        Y = df[self.items].astype(float)
+        self.max_scaler = float(np.nanmax(Y.to_numpy(dtype=float)))
+        Y_scaled = Y.div(self.max_scaler).to_numpy(dtype=float)
+
+        mask = ~np.isnan(Y_scaled)
+        obs_time_idx, obs_item_idx = np.where(mask)
+        y_flat = Y_scaled[mask]
+
+        t = np.arange(len(df))
+        fourier_X, self.fourier_names = self._get_fourier_matrix(t)
+
+        if self.event_X is None:
+            self.event_names = ["none"]
+            self.event_X = np.zeros((len(df), 1))
+
+        model_coords = {
+            "time": df[date_col],
+            "item": self.items,
+            "fourier_feature": self.fourier_names,
+            "event": self.event_names,
+            "obs": np.arange(len(y_flat)),
+        }
+
+        with pm.Model(coords=model_coords) as self.model:
+            t_shared = pm.Data("t", t, dims="time")
+            fourier_shared = pm.Data(
+                "fourier_X", fourier_X, dims=("time", "fourier_feature")
+            )
+            event_shared = pm.Data("event_X", self.event_X, dims=("time", "event"))
+
+            # Hyper-priors (population-level).
+            intercept_mu = self.priors.intercept_mu.build("intercept_mu")
+            intercept_sigma = self.priors.intercept_sigma.build("intercept_sigma")
+            growth_mu = self.priors.growth_mu.build("growth_mu")
+            growth_sigma = self.priors.growth_sigma.build("growth_sigma")
+            beta_fourier_mu = self.priors.beta_fourier_mu.build(
+                "beta_fourier_mu", dims="fourier_feature"
+            )
+            beta_fourier_sigma = self.priors.beta_fourier_sigma.build(
+                "beta_fourier_sigma", dims="fourier_feature"
+            )
+            beta_event_mu = self.priors.beta_event_mu.build(
+                "beta_event_mu", dims="event"
+            )
+            beta_event_sigma = self.priors.beta_event_sigma.build(
+                "beta_event_sigma", dims="event"
+            )
+
+            # Non-centered per-item coefficients.
+            z_intercept = pm.Normal("z_intercept", 0.0, 1.0, dims="item")
+            intercept = pm.Deterministic(
+                "intercept",
+                intercept_mu + intercept_sigma * z_intercept,
+                dims="item",
+            )
+            z_growth = pm.Normal("z_growth", 0.0, 1.0, dims="item")
+            growth = pm.Deterministic(
+                "growth",
+                growth_mu + growth_sigma * z_growth,
+                dims="item",
+            )
+            z_beta_fourier = pm.Normal(
+                "z_beta_fourier", 0.0, 1.0, dims=("item", "fourier_feature")
+            )
+            beta_fourier = pm.Deterministic(
+                "beta_fourier",
+                beta_fourier_mu + beta_fourier_sigma * z_beta_fourier,
+                dims=("item", "fourier_feature"),
+            )
+            z_beta_event = pm.Normal("z_beta_event", 0.0, 1.0, dims=("item", "event"))
+            beta_event = pm.Deterministic(
+                "beta_event",
+                beta_event_mu + beta_event_sigma * z_beta_event,
+                dims=("item", "event"),
+            )
+
+            # Likelihood — vectorised over (time, item).
+            trend = pm.Deterministic(
+                "trend",
+                intercept[None, :] + growth[None, :] * t_shared[:, None],
+                dims=("time", "item"),
+            )
+            seasonality = pm.Deterministic(
+                "seasonality",
+                pm.math.dot(fourier_shared, beta_fourier.T),
+                dims=("time", "item"),
+            )
+            event_effect = pm.Deterministic(
+                "event_effect",
+                pm.math.dot(event_shared, beta_event.T),
+                dims=("time", "item"),
+            )
+            mu = pm.Deterministic(
+                "mu", trend + seasonality + event_effect, dims=("time", "item")
+            )
+
+            sigma = self.priors.sigma.build("sigma")
+
+            mu_obs = mu[obs_time_idx, obs_item_idx]
+            pm.Normal("y", mu=mu_obs, sigma=sigma, observed=y_flat, dims="obs")
+
+            self.idata = pm.sample(
+                samples,
+                chains=chains,
+                tune=1000,
+                target_accept=0.95,
+                sampler="nutpie",
+            )
+            self.posterior_predictive = pm.sample_posterior_predictive(
+                self.idata
+            ).posterior_predictive
+            return self.idata
+
+    def forecast(self, scenario: Optional[dict] = None) -> az.InferenceData:
+        """
+        scenario keys:
+            df_future (pd.DataFrame): Future dates dataframe with a ``date_col``.
+            date_col (str): Name of the date column. Defaults to the constructor's.
+
+        Predictions are computed directly from the posterior samples rather
+        than via ``pm.sample_posterior_predictive``. The model's likelihood is
+        a flat 1-D vector tied to training-time observed indices, so we can't
+        reuse the same graph for a (time, item) grid of future predictions -
+        and doing it in numpy is also much faster.
+        """
+        if scenario is None:
+            raise ValueError("A scenario dict with key 'df_future' is required.")
+        df_future = scenario["df_future"].copy()
+        date_col = scenario.get("date_col", self.date_col)
+
+        n_train = len(self.data)
+        n_forecast = len(df_future)
+        t_future = np.arange(n_train, n_train + n_forecast)
+        fourier_X_future, _ = self._get_fourier_matrix(t_future)
+
+        df_future[date_col] = pd.to_datetime(df_future[date_col])
+        dates_future = df_future[date_col]
+        if "none" in self.event_names:
+            event_X_future = np.zeros((n_forecast, 1))
+        else:
+            event_X_future = np.column_stack(
+                [
+                    dates_future.isin(
+                        pd.to_datetime(self.events_input.get(name, []))
+                    ).astype(int)
+                    for name in self.event_names
+                ]
+            )
+
+        post = self.idata.posterior
+        intercept = post["intercept"].values  # (C, D, I)
+        growth = post["growth"].values  # (C, D, I)
+        beta_fourier = post["beta_fourier"].values  # (C, D, I, F)
+        beta_event = post["beta_event"].values  # (C, D, I, E)
+        sigma = post["sigma"].values  # (C, D)
+
+        trend = (
+            intercept[:, :, None, :]
+            + growth[:, :, None, :] * t_future[None, None, :, None]
+        )  # (C, D, T, I)
+        seasonality = np.einsum("tf,cdif->cdti", fourier_X_future, beta_fourier)
+        event_effect = np.einsum("te,cdie->cdti", event_X_future, beta_event)
+        mu_future = trend + seasonality + event_effect  # (C, D, T, I)
+
+        rng = np.random.default_rng()
+        y_future = rng.normal(mu_future, sigma[:, :, None, None])  # (C, D, T, I)
+
+        predictions = xr.Dataset(
+            {"y": (("chain", "draw", "time", "item"), y_future)},
+            coords={
+                "chain": post.chain.values,
+                "draw": post.draw.values,
+                "time": df_future[date_col].values,
+                "item": self.items,
+            },
+        )
+        self.forecast_idata = az.InferenceData(predictions=predictions)
+        return self.forecast_idata
+
+    def plot_forecast(self, item: Optional[str] = None):
+        """
+        Plot the posterior predictive forecast for one or all items.
+        """
+        if self.forecast_idata is None:
+            raise RuntimeError("Call .forecast() before plotting.")
+
+        items_to_plot = [item] if item is not None else self.items
+        n = len(items_to_plot)
+        ncols = min(n, 2)
+        nrows = (n + ncols - 1) // ncols
+        fig, axes = plt.subplots(
+            nrows, ncols, figsize=(7 * ncols, 4 * nrows), squeeze=False
+        )
+
+        dates = self.forecast_idata.predictions.time
+        y_all = self.forecast_idata.predictions["y"]
+        for i, it in enumerate(items_to_plot):
+            ax = axes[i // ncols, i % ncols]
+            y = y_all.sel(item=it) * self.max_scaler
+            mean = y.mean(dim=("chain", "draw"))
+            hdi = az.hdi(y, hdi_prob=0.94)["y"]
+            ax.plot(dates, mean, color="C0", lw=2, label="Forecast mean")
+            ax.fill_between(
+                dates, hdi[:, 0], hdi[:, 1], color="C0", alpha=0.3, label="94% HDI"
+            )
+            ax.set_title(f"Item: {it}")
+            ax.set_ylabel("Sales")
+            ax.legend()
+        for j in range(n, nrows * ncols):
+            axes[j // ncols, j % ncols].axis("off")
+        plt.tight_layout()
+        return fig, axes
+
+    def plot_components(
+        self,
+        item: str,
+        components: list = ["trend", "seasonality", "event_effect", "mu"],
+    ):
+        """
+        Plot the additive components for a single item, in the original scale.
+        """
+        if self.idata is None:
+            raise ValueError("Call .fit() before plotting components.")
+
+        post = self.idata.posterior
+        dates = post.time
+        scaler = self.max_scaler
+
+        fig, axes = plt.subplots(
+            len(components), 1, figsize=(12, 3 * len(components)), sharex=True
+        )
+        cmap = plt.get_cmap("tab10")
+        colors = [cmap(i) for i in np.linspace(0, 1, len(components))]
+        for i, (comp, color) in enumerate(zip(components, colors)):
+            arr = post[comp].sel(item=item) * scaler
+            mean = arr.mean(dim=("chain", "draw"))
+            hdi = az.hdi(arr, hdi_prob=0.94)[comp]
+            axes[i].plot(dates, mean, color=color, lw=2, label=f"{comp} (mean)")
+            axes[i].fill_between(
+                dates, hdi[:, 0], hdi[:, 1], color=color, alpha=0.2, label="94% HDI"
+            )
+            axes[i].set_title(f"{item} — {comp}")
+            axes[i].set_ylabel("Sales")
+            axes[i].legend(loc="upper left")
+        plt.tight_layout()
+        return fig, axes
+
+    def get_demand_distribution(
+        self,
+        start_date: str,
+        end_date: str,
+        item: Optional[str] = None,
+    ) -> xr.Dataset:
+        """
+        Posterior total demand over ``[start_date, end_date]``.
+
+        With ``item=None`` the result keeps the ``item`` dim and rescales each
+        item by its own ``max_scaler``. Passing ``item=<name>`` returns the
+        single-item distribution in the same shape as :class:`BayesTimeSeries`'s
+        output, so the caller can plug it into ``ForecastSolver`` per item.
+        """
+        if self.forecast_idata is None:
+            raise RuntimeError("You must call .forecast() before accessing results.")
+
+        y = self.forecast_idata.predictions["y"].sel(time=slice(start_date, end_date))
+        if item is not None:
+            scaled = y.sel(item=item) * self.max_scaler
+            return scaled.sum(dim="time").to_dataset(name="demand")
+
+        scaled = y * self.max_scaler
+        return scaled.sum(dim="time").to_dataset(name="demand")
