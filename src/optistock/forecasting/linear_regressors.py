@@ -18,6 +18,7 @@ from .priors import (
     HierarchicalBayesTimeSeriesPriors,
     HSGPBayesTimeSeriesPriors,
 )
+from ..causal.lift_constraints import LiftConstraint
 
 
 default_seasonal_config = {
@@ -35,6 +36,7 @@ class BayesTimeSeries(BaseForecaster):
         seasonal_config: dict = default_seasonal_config,
         stockout_dates: Optional[Union[pd.DatetimeIndex, pd.Series]] = None,
         priors: Optional[BayesTimeSeriesPriors] = None,
+        lift_constraints: Optional[list[LiftConstraint]] = None,
     ) -> None:
         self.data = data
         self.target_col = target_col
@@ -45,6 +47,7 @@ class BayesTimeSeries(BaseForecaster):
             else None
         )
         self.priors = priors or BayesTimeSeriesPriors()
+        self.lift_constraints = list(lift_constraints) if lift_constraints else []
         self._upper_bound_scaled = None
         self.model = None
         self.idata = None
@@ -161,6 +164,20 @@ class BayesTimeSeries(BaseForecaster):
                 "event_effect", pm.math.dot(events_shared, beta_event), dims="time"
             )
 
+            for c in self.lift_constraints:
+                if c.event_name not in self.event_names:
+                    raise ValueError(
+                        f"LiftConstraint references unknown event "
+                        f"{c.event_name!r}; known events: {self.event_names}"
+                    )
+                ev_idx = self.event_names.index(c.event_name)
+                pm.Normal(
+                    f"lift_obs_{c.event_name}",
+                    mu=beta_event[ev_idx],
+                    sigma=c.sigma_abs_lift / self.max_scaler,
+                    observed=c.mean_abs_lift / self.max_scaler,
+                )
+
             # Seasonality
             beta_fourier = self.priors.beta_fourier.build(
                 "beta_fourier", dims="fourier_feature"
@@ -199,7 +216,7 @@ class BayesTimeSeries(BaseForecaster):
                 )
 
             self.idata = pm.sample(
-                samples, chains=chains, tune=1000, target_accept=0.95, sampler="numpyro"
+                samples, chains=chains, tune=1000, target_accept=0.95, nuts_sampler="nutpie"
             )
 
             self.posterior_predictive = pm.sample_posterior_predictive(
@@ -576,7 +593,7 @@ class HSGPBayesTimeSeries(BaseForecaster):
             sigma = self.priors.sigma.build("sigma")
             pm.Normal("y", mu=mu, sigma=sigma, observed=y_obs, dims="time")
 
-            self.idata = pm.sample(samples, chains=chain, sampler="numpyro")
+            self.idata = pm.sample(samples, chains=chain, nuts_sampler="nutpie")
             return self.idata
 
     def forecast(self, scenario: Optional[dict] = None) -> az.InferenceData:
@@ -671,6 +688,7 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
         items: Optional[list] = None,
         seasonal_config: dict = default_seasonal_config,
         priors: Optional[HierarchicalBayesTimeSeriesPriors] = None,
+        lift_constraints: Optional[list[LiftConstraint]] = None,
     ) -> None:
         self.data = data.copy()
         self.date_col = date_col
@@ -679,6 +697,7 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
         self.items = list(items)
         self.seasonal_config = seasonal_config
         self.priors = priors or HierarchicalBayesTimeSeriesPriors()
+        self.lift_constraints = list(lift_constraints) if lift_constraints else []
         self.model = None
         self.idata = None
         self.forecast_idata = None
@@ -690,22 +709,50 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
 
     def create_events(self, events: dict, date_col: Optional[str] = None):
         """
-        Events apply to every item (one shared indicator matrix), but each
-        item learns its own coefficient via the hierarchical ``beta_event``.
+        Register event indicators. Each item still learns its own
+        ``beta_event`` coefficient hierarchically; this method just controls
+        which (time, item) cells the event is "on" for.
+
+        Each value in ``events`` is one of:
+
+        * ``list[date]`` — event fires for every item on those dates.
+        * ``dict[item_name, list[date]]`` — event fires only for the listed
+          items on the listed dates; items not in the dict get a zero
+          indicator (no training signal on that event coefficient).
         """
         date_col = date_col or self.date_col
         df = self.data.copy()
         df[date_col] = pd.to_datetime(df[date_col])
         dates = df[date_col]
-        self.events_input = events
-        event_indicators = {
-            name: dates.isin(pd.to_datetime(date_list)).astype(int)
-            for name, date_list in events.items()
-        }
-        self.event_names = sorted(event_indicators.keys())
-        self.event_X = np.column_stack(
-            [event_indicators[name] for name in self.event_names]
+
+        normalised: dict[str, dict[str, list]] = {}
+        for name, spec in events.items():
+            if isinstance(spec, dict):
+                unknown = set(spec) - set(self.items)
+                if unknown:
+                    raise ValueError(
+                        f"Event {name!r} references unknown items: "
+                        f"{sorted(unknown)}; known items: {self.items}"
+                    )
+                normalised[name] = {
+                    item: list(spec.get(item, [])) for item in self.items
+                }
+            else:
+                normalised[name] = {item: list(spec) for item in self.items}
+        self.events_input = normalised
+
+        self.event_names = sorted(normalised.keys())
+        indicator = np.zeros(
+            (len(df), len(self.items), len(self.event_names)), dtype=int
         )
+        for e, name in enumerate(self.event_names):
+            for i, item in enumerate(self.items):
+                indicator[:, i, e] = (
+                    dates.isin(pd.to_datetime(normalised[name][item]))
+                    .astype(int)
+                    .values
+                )
+        self.event_X = indicator
         return self
 
     def fit(
@@ -732,7 +779,7 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
 
         if self.event_X is None:
             self.event_names = ["none"]
-            self.event_X = np.zeros((len(df), 1))
+            self.event_X = np.zeros((len(df), len(self.items), 1))
 
         model_coords = {
             "time": df[date_col],
@@ -747,7 +794,9 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
             fourier_shared = pm.Data(
                 "fourier_X", fourier_X, dims=("time", "fourier_feature")
             )
-            event_shared = pm.Data("event_X", self.event_X, dims=("time", "event"))
+            event_shared = pm.Data(
+                "event_X", self.event_X, dims=("time", "item", "event")
+            )
 
             # Hyper-priors (population-level).
             intercept_mu = self.priors.intercept_mu.build("intercept_mu")
@@ -795,6 +844,31 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
                 dims=("item", "event"),
             )
 
+            for c in self.lift_constraints:
+                if c.event_name not in self.event_names:
+                    raise ValueError(
+                        f"LiftConstraint references unknown event "
+                        f"{c.event_name!r}; known events: {self.event_names}"
+                    )
+                if c.item is None:
+                    raise ValueError(
+                        f"LiftConstraint for event {c.event_name!r} must "
+                        f"specify item= when used with HierarchicalBayesTimeSeries"
+                    )
+                if c.item not in self.items:
+                    raise ValueError(
+                        f"LiftConstraint references unknown item {c.item!r}; "
+                        f"known items: {self.items}"
+                    )
+                ev_idx = self.event_names.index(c.event_name)
+                it_idx = self.items.index(c.item)
+                pm.Normal(
+                    f"lift_obs_{c.item}_{c.event_name}",
+                    mu=beta_event[it_idx, ev_idx],
+                    sigma=c.sigma_abs_lift / self.max_scaler,
+                    observed=c.mean_abs_lift / self.max_scaler,
+                )
+
             # Likelihood — vectorised over (time, item).
             trend = pm.Deterministic(
                 "trend",
@@ -808,7 +882,7 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
             )
             event_effect = pm.Deterministic(
                 "event_effect",
-                pm.math.dot(event_shared, beta_event.T),
+                (event_shared * beta_event[None, :, :]).sum(axis=-1),
                 dims=("time", "item"),
             )
             mu = pm.Deterministic(
@@ -825,7 +899,7 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
                 chains=chains,
                 tune=1000,
                 target_accept=0.95,
-                sampler="nutpie",
+                nuts_sampler="nutpie",
             )
             self.posterior_predictive = pm.sample_posterior_predictive(
                 self.idata
@@ -857,16 +931,19 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
         df_future[date_col] = pd.to_datetime(df_future[date_col])
         dates_future = df_future[date_col]
         if "none" in self.event_names:
-            event_X_future = np.zeros((n_forecast, 1))
+            event_X_future = np.zeros((n_forecast, len(self.items), 1))
         else:
-            event_X_future = np.column_stack(
-                [
-                    dates_future.isin(
-                        pd.to_datetime(self.events_input.get(name, []))
-                    ).astype(int)
-                    for name in self.event_names
-                ]
+            event_X_future = np.zeros(
+                (n_forecast, len(self.items), len(self.event_names)), dtype=int
             )
+            for e, name in enumerate(self.event_names):
+                spec = self.events_input.get(name, {})
+                for i, item in enumerate(self.items):
+                    event_X_future[:, i, e] = (
+                        dates_future.isin(pd.to_datetime(spec.get(item, [])))
+                        .astype(int)
+                        .values
+                    )
 
         post = self.idata.posterior
         intercept = post["intercept"].values  # (C, D, I)
@@ -880,7 +957,7 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
             + growth[:, :, None, :] * t_future[None, None, :, None]
         )  # (C, D, T, I)
         seasonality = np.einsum("tf,cdif->cdti", fourier_X_future, beta_fourier)
-        event_effect = np.einsum("te,cdie->cdti", event_X_future, beta_event)
+        event_effect = np.einsum("tie,cdie->cdti", event_X_future, beta_event)
         mu_future = trend + seasonality + event_effect  # (C, D, T, I)
 
         rng = np.random.default_rng()

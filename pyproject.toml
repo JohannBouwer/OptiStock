@@ -26,6 +26,7 @@ dependencies = [
   "jaxlib>=0.9.0.1",
   "pymc-marketing>=0.18.0",
   "nutpie>=0.10",
+  "causalpy>=0.8.0",
 ]
 
 [tool.uv]

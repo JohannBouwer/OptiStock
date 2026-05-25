@@ -1,5 +1,8 @@
 # OptiStock Notebooks
 
+> [!WARNING]
+> These notebooks where generated with the help of an LLM, but I have verified the content. They exist to help show how to use the code base and what concepts are implemented.
+
 A walkthrough of the OptiStock library, building up from the single-item newsvendor problem to multi-item Bayesian inventory policies with hierarchical forecasting.
 
 | # | Notebook | Goal |
@@ -13,3 +16,4 @@ A walkthrough of the OptiStock library, building up from the single-item newsven
 | 7 | [Inventory Policy](7_Inventory_Policy.ipynb) | Deep-dive on `PeriodicBaseStock` service-level constraints and the `lead_time + review_period` effective horizon, quantifying the profit cost of guaranteeing a target cycle service level. |
 | 8 | [Advanced Forecasting](8_Advanced_Forecasting.ipynb) | Shows how to inspect, tighten, or swap the Bayesian priors on every forecaster via the `*Priors` dataclasses and the `Prior` wrapper, including the family-grouped priors on `UnivariateSSM`. |
 | 9 | [Hierarchical Forecasting](9_Hierarchical_Forecasting.ipynb) | Demonstrates `HierarchicalBayesTimeSeries` for panel forecasting across many items, with partial pooling letting short-history "new SKUs" borrow strength from long-history items via shared hyper-priors. |
+| 10 | [Causal Calibration](10_Causal_Calibration.ipynb) | Demonstrates how to use the `synthetic_control` class to measure the impact of different "events" (promos, discounts, ad campaigns, etc...) on the sales of an item, and then use these experiments to calibrate bayesian models. |
