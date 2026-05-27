@@ -223,7 +223,7 @@ class UnivariateSSMPriors(BasePriors):
         "Diagonal scale of the initial state covariance (P0_diag)",
     ))
     initial_state: Prior = field(default_factory=lambda: Prior(
-        "Normal", {"mu": 0.5, "sigma": 1.0},
+        "Normal", {"mu": 0.5, "sigma": 0.5},
         "Initial state values (initial_*)",
     ))
     observation_noise: Prior = field(default_factory=lambda: Prior(
@@ -231,8 +231,8 @@ class UnivariateSSMPriors(BasePriors):
         "Measurement noise (sigma_obs)",
     ))
     regression_beta: Prior = field(default_factory=lambda: Prior(
-        "HalfNormal", {"sigma": 3.0},
-        "Regression coefficient magnitudes (beta_*)",
+        "HalfNormal", {"sigma": 0.5},
+        "Regression coefficient magnitudes (beta_*); assumes regressors scaled to ~O(1)",
     ))
     regression_innovation: Prior = field(default_factory=lambda: Prior(
         "Gamma", {"alpha": 2, "beta": 50},
@@ -243,7 +243,7 @@ class UnivariateSSMPriors(BasePriors):
         "Process noise for trend / level / slope (sigma_*)",
     ))
     seasonal_amplitude: Prior = field(default_factory=lambda: Prior(
-        "Normal", {"mu": 0.0, "sigma": 0.5},
+        "Normal", {"mu": 0.0, "sigma": 0.15},
         "Initial seasonal amplitudes (params_*)",
     ))
     seasonal_innovation: Prior = field(default_factory=lambda: Prior(
