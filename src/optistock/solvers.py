@@ -146,6 +146,8 @@ class ForecastSolver(Solver):
         # Populated by pull_demand() / solve()
         self._demand_matrix: np.ndarray | None = None  # (n_items, n_samples)
         self._yield_matrix: np.ndarray | None = None  # (n_items, n_samples)
+        self._rho: float | None = None  # fixed CARA scale, set in optimize()
+        self._util_shift: float = 0.0  # fixed numerical-stability shift
 
     def pull_demand(self, start_date: str, end_date: str) -> dict[str, np.ndarray]:
         """
@@ -188,6 +190,8 @@ class ForecastSolver(Solver):
         self._yield_matrix = np.array(
             [item.yield_distribution.sample(n_samples) for item, _ in self.problems]
         )
+
+        self._rho = self._compute_rho()
 
         if n_items == 1 and not self.limits:
             quantities = self._solve_scalar()
@@ -281,9 +285,12 @@ class ForecastSolver(Solver):
             "service_level": service_level,
         }
 
-        if not np.isinf(self.risk_aversion):
-            eu = float(np.mean(np.exp(-profits / self.risk_aversion)))
-            ce = float(-self.risk_aversion * np.log(max(eu, 1e-300)))
+        rho = self._rho if self._rho is not None else self._compute_rho()
+        if self.risk_aversion > 0.0 and np.isfinite(rho):
+            # Stable CE: E[exp(-(profit - shift)/rho)] then undo the shift.
+            # CE = -rho·log(E[exp(-profit/rho)]) = shift - rho·log(E[exp(-(profit-shift)/rho)]).
+            eu = float(np.mean(np.exp(-(profits - self._util_shift) / rho)))
+            ce = self._util_shift - rho * np.log(max(eu, 1e-300))
             result["certainty_equivalent"] = ce
             result["risk_premium"] = float(np.mean(profits)) - ce
 
@@ -368,24 +375,65 @@ class ForecastSolver(Solver):
         cvar_val = float(np.mean(np.sort(profits)[:n_tail]))
         return -((1 - self.cvar_lambda) * expected + self.cvar_lambda * cvar_val)
 
+    def _reference_profits(self) -> np.ndarray:
+        """
+        Profit scenarios at a fixed risk-neutral reference allocation.
+
+        Used to derive a *constant* CARA scale ρ once, before optimisation,
+        so that ρ does not drift as the optimiser changes the allocation.
+        The reference is the same median-demand / mean-yield warm start used
+        by ``_solve_vector``.
+        """
+        assert self._demand_matrix is not None and self._yield_matrix is not None
+        n_items = len(self.problems)
+        q_ref = np.array(
+            [
+                np.median(self._demand_matrix[i])
+                / max(float(self._yield_matrix[i].mean()), 1e-6)
+                for i in range(n_items)
+            ]
+        )
+        return self._portfolio_profits(q_ref)
+
+    def _compute_rho(self) -> float:
+        """
+        Map the dimensionless ``risk_aversion`` r to a fixed CARA scale ρ.
+
+        ρ = σ_profit · (1 − r) / r, where σ_profit is the profit standard
+        deviation at a *fixed* reference allocation (see ``_reference_profits``).
+        Also caches ``self._util_shift`` (the reference mean profit) so the
+        exponential can be evaluated stably with a constant offset.
+        Returns ``inf`` for the risk-neutral case (r ≤ 0), which recovers SAA.
+        """
+        r = self.risk_aversion
+        ref = self._reference_profits()
+        self._util_shift = float(np.mean(ref))
+        if r <= 0.0:
+            return float("inf")
+        sigma = float(np.std(ref))
+        if sigma < 1e-10:
+            return float("inf")
+        return sigma * (1.0 - r) / r
+
     def _utility(self, quantities: np.ndarray) -> float:
         """
         Expected exponential disutility E[exp(−profit / ρ)].
 
         Minimising this maximises E[U(profit)] where U(x) = −exp(−x / ρ).
-        ρ is derived from the dimensionless ``risk_aversion`` parameter r via
-        ρ = σ_profit · (1 − r) / r, so r = 0 recovers SAA and r → 1 is
-        maximally risk-averse.
+        ρ is the *fixed* CARA scale computed once by ``_compute_rho`` from the
+        dimensionless ``risk_aversion`` r, so the objective stays a single,
+        consistent utility function across the whole search.  r = 0 recovers
+        SAA and r → 1 is maximally risk-averse.
         """
         profits = self._portfolio_profits(quantities)
-        r = self.risk_aversion
-        if r <= 0.0:
+        rho = self._rho if self._rho is not None else self._compute_rho()
+        if not np.isfinite(rho):
             return -float(np.mean(profits))
-        sigma = float(np.std(profits))
-        if sigma < 1e-10:
-            return -float(np.mean(profits))
-        rho = sigma * (1.0 - r) / r
-        return float(np.mean(np.exp(-profits / rho)))
+        # Subtract a FIXED reference profit so the exponent stays well-scaled.
+        # The shift is identical for every candidate, so it only multiplies the
+        # objective by a positive constant and leaves the minimiser unchanged.
+        scaled = -(profits - self._util_shift) / rho
+        return float(np.mean(np.exp(scaled)))
 
     def _resolve_lower_bound(self, item: Item, demand: np.ndarray) -> float:
         """Lower bound for item: new API (lower_bounds) takes precedence over deprecated policies."""
