@@ -3,4 +3,6 @@
 /inventory_management.egg-info
 .ipynb_checkpoints
 /.vscode
-/.vscode
+
+# Bakery demo data: no open license, downloaded locally via notebooks/11_Bakery_Dataset.ipynb
+/data/bakery/
