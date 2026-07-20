@@ -18,6 +18,16 @@ pip install git+https://github.com/JohannBouwer/OptiStock.git
 
 > Note: If you are already managing your own project with `uv`, you can simply run `uv add git+https://github.com/JohannBouwer/OptiStock.git` to add it to your dependency tree.
 
+#### Optional extras
+
+The core install ships with [nutpie](https://github.com/pymc-devs/nutpie) as the default NUTS sampler backend. If you want to sample through JAX instead (`sampler="numpyro"` / `nuts_sampler="numpyro"` on any fit method), install the `jax` extra:
+
+```bash
+pip install "optistock[jax] @ git+https://github.com/JohannBouwer/OptiStock.git"
+```
+
+Notebook tooling (`jupyter`, `ipywidgets`) and the demo dashboard (`streamlit`) are **not** part of the library install — they live in the `dev` dependency group and are only installed in the development setup below.
+
 ### For Development (Editable Mode)
 
 If you plan to modify the code or contribute to the project, use `uv` to synchronise
@@ -33,7 +43,8 @@ git clone git@github.com:JohannBouwer/OptiStock.git
 # move into the directory
 cd OptiStock
 
-# Create environment and install dependencies (including editable project)
+# Create environment and install dependencies (including editable project and
+# the dev group: notebooks, dashboard tooling, and the JAX sampler backend)
 uv sync
 
 # Activate the environment

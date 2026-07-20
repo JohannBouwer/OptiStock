@@ -5,28 +5,44 @@ description = "Stochastic Inventory Optimization Framework"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 authors = [{ name = "Johann Mynhardt Bouwer", email = "bouwer2608@gmail.com" }]
+# Core runtime dependencies — everything `import optistock` actually needs.
 dependencies = [
   "arviz>=0.23.0",
-  "ipywidgets>=8.1.8",
-  "llvmlite>=0.46.0",
+  "causalpy>=0.8.0",
   "matplotlib>=3.10.8",
-  "notebook>=7.5.1",
-  "numba>=0.63.1",
+  "numba>=0.63.1",       # nutpie compiles model logp via numba
   "numpy>=2.3.5",
+  "nutpie>=0.10",        # default NUTS sampler backend
+  "pandas>=2.0",
   "pymc>=5.27.0",
   "pymc-bart>=0.11.0",
+  "pymc-extras>=0.8.0",
+  "pymc-marketing>=0.18.0",
   "scipy>=1.16.3",
   "seaborn>=0.13.2",
-  "setuptools>=61.0",
-  "streamlit>=1.52.2",
   "xarray>=2025.12.0",
-  "pymc-extras>=0.8.0",
-  "numpyro>=0.20.0",
+]
+
+[project.optional-dependencies]
+# Alternative JAX-based sampler backend: pass sampler="numpyro" /
+# nuts_sampler="numpyro" to any fit method.
+jax = [
   "jax>=0.9.0.1",
   "jaxlib>=0.9.0.1",
-  "pymc-marketing>=0.18.0",
-  "nutpie>=0.10",
-  "causalpy>=0.8.0",
+  "numpyro>=0.20.0",
+]
+
+[dependency-groups]
+# Tooling for the notebooks and the demo dashboard — installed by
+# `uv sync` for contributors, never shipped with `pip install optistock`.
+dev = [
+  "notebook>=7.5.1",
+  "ipywidgets>=8.1.8",
+  "streamlit>=1.52.2",
+  "jax>=0.9.0.1",
+  "jaxlib>=0.9.0.1",
+  "numpyro>=0.20.0",
+  "kagglehub>=0.3",
 ]
 
 [tool.uv]
