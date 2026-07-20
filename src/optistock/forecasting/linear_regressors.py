@@ -29,6 +29,21 @@ default_seasonal_config = {
 
 
 class BayesTimeSeries(BaseForecaster):
+    """
+    Single-item Bayesian time-series forecaster (trend + Fourier seasonality
+    + event effects) with a Normal observation model.
+
+    Parameters of note
+    ------------------
+    truncate_at_zero : bool
+        Use a ``TruncatedNormal(lower=0)`` likelihood so that both inference
+        and posterior-predictive forecasts respect the non-negativity of
+        sales. Default ``True``; set ``False`` to recover the unbounded
+        Normal likelihood. When ``stockout_dates`` is given the zero bound is
+        applied as *lower censoring* inside ``pm.Censored`` instead (a
+        censored distribution cannot wrap a truncated one).
+    """
+
     def __init__(
         self,
         data: pd.DataFrame,
@@ -37,6 +52,7 @@ class BayesTimeSeries(BaseForecaster):
         stockout_dates: Optional[Union[pd.DatetimeIndex, pd.Series]] = None,
         priors: Optional[BayesTimeSeriesPriors] = None,
         lift_constraints: Optional[list[LiftConstraint]] = None,
+        truncate_at_zero: bool = True,
     ) -> None:
         self.data = data
         self.target_col = target_col
@@ -48,6 +64,7 @@ class BayesTimeSeries(BaseForecaster):
         )
         self.priors = priors or BayesTimeSeriesPriors()
         self.lift_constraints = list(lift_constraints) if lift_constraints else []
+        self.truncate_at_zero = truncate_at_zero
         self._upper_bound_scaled = None
         self.model = None
         self.idata = None
@@ -197,22 +214,26 @@ class BayesTimeSeries(BaseForecaster):
                 dims="time",
             )
 
+            # Observation distribution: bounded at zero by default because
+            # sales cannot be negative (scaling preserves the zero bound).
+            # The stockout variant censors at zero rather than truncating —
+            # pm.Censored cannot wrap an already-truncated distribution.
             if self.stockout_dates is not None:
                 pm.Censored(
                     "y",
                     dist=pm.Normal.dist(mu=mu, sigma=sigma),
-                    lower=None,
+                    lower=0.0 if self.truncate_at_zero else None,
                     upper=upper_bound,
                     observed=y_obs,
                     dims="time",
                 )
+            elif self.truncate_at_zero:
+                pm.TruncatedNormal(
+                    "y", mu=mu, sigma=sigma, lower=0.0, observed=y_obs, dims="time"
+                )
             else:
                 pm.Normal(
-                    "y",
-                    mu=mu,
-                    sigma=sigma,
-                    observed=y_obs,
-                    dims="time",
+                    "y", mu=mu, sigma=sigma, observed=y_obs, dims="time"
                 )
 
             self.idata = pm.sample(
@@ -679,6 +700,10 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
 
     The model uses a non-centered parameterisation for every per-item
     coefficient to avoid funnel pathologies under HMC.
+
+    By default the observation model is ``TruncatedNormal(lower=0)`` so that
+    inference and forecasts respect the non-negativity of sales
+    (``truncate_at_zero=False`` recovers the unbounded Normal).
     """
 
     def __init__(
@@ -689,6 +714,7 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
         seasonal_config: dict = default_seasonal_config,
         priors: Optional[HierarchicalBayesTimeSeriesPriors] = None,
         lift_constraints: Optional[list[LiftConstraint]] = None,
+        truncate_at_zero: bool = True,
     ) -> None:
         self.data = data.copy()
         self.date_col = date_col
@@ -698,6 +724,7 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
         self.seasonal_config = seasonal_config
         self.priors = priors or HierarchicalBayesTimeSeriesPriors()
         self.lift_constraints = list(lift_constraints) if lift_constraints else []
+        self.truncate_at_zero = truncate_at_zero
         self.model = None
         self.idata = None
         self.forecast_idata = None
@@ -892,7 +919,12 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
             sigma = self.priors.sigma.build("sigma")
 
             mu_obs = mu[obs_time_idx, obs_item_idx]
-            pm.Normal("y", mu=mu_obs, sigma=sigma, observed=y_flat, dims="obs")
+            if self.truncate_at_zero:
+                pm.TruncatedNormal(
+                    "y", mu=mu_obs, sigma=sigma, lower=0.0, observed=y_flat, dims="obs"
+                )
+            else:
+                pm.Normal("y", mu=mu_obs, sigma=sigma, observed=y_flat, dims="obs")
 
             self.idata = pm.sample(
                 samples,
@@ -961,7 +993,17 @@ class HierarchicalBayesTimeSeries(BayesTimeSeries):
         mu_future = trend + seasonality + event_effect  # (C, D, T, I)
 
         rng = np.random.default_rng()
-        y_future = rng.normal(mu_future, sigma[:, :, None, None])  # (C, D, T, I)
+        sig = np.broadcast_to(sigma[:, :, None, None], mu_future.shape)
+        if self.truncate_at_zero:
+            # Match the TruncatedNormal(lower=0) likelihood used in fit().
+            from scipy.stats import truncnorm
+
+            a = (0.0 - mu_future) / sig
+            y_future = truncnorm.rvs(
+                a, np.inf, loc=mu_future, scale=sig, random_state=rng
+            )  # (C, D, T, I)
+        else:
+            y_future = rng.normal(mu_future, sig)  # (C, D, T, I)
 
         predictions = xr.Dataset(
             {"y": (("chain", "draw", "time", "item"), y_future)},

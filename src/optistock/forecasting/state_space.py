@@ -40,6 +40,13 @@ class UnivariateSSM(BaseForecaster):
         Mapping of exogenous column name → whether that regressor has stochastic
         innovations (time-varying coefficient).
         Example: ``{"spend": True, "event": False}``
+    log_transform : bool
+        Fit the model on ``log1p(target)`` instead of the raw target. The
+        Kalman-filter likelihood is Gaussian by construction, so this is the
+        way to guarantee **non-negative predictions**: samples are mapped back
+        with ``expm1`` by :meth:`inverse_transform`, which every plot method
+        and :meth:`get_demand_distribution` route through. Components become
+        multiplicative in the original scale. Default ``False``.
     """
 
     _MEAS_ERROR_NAME = "obs"
@@ -50,12 +57,14 @@ class UnivariateSSM(BaseForecaster):
         target_col: str,
         exog: Optional[dict[str, bool]] = None,
         priors: Optional[UnivariateSSMPriors] = None,
+        log_transform: bool = False,
     ):
         self.data = data.copy()
         self.target = target_col
         self.y = self.data[self.target]
         self.exog = exog or {}
         self.priors = priors or UnivariateSSMPriors()
+        self.log_transform = log_transform
         self.max_scaler: float = 1.0  # set in fit()
 
         self._seasonal_name: Optional[str] = None
@@ -203,11 +212,13 @@ class UnivariateSSM(BaseForecaster):
         **sampler_kwargs
             Additional keyword arguments forwarded to ``pm.sample``.
         """
-        # Scale target to [0, 1] for better prior specification and MCMC sampling.
-        # All posterior quantities are in scaled space; un-scaling happens in the
-        # plot methods and get_demand_distribution.
-        self.max_scaler = float(self.y.max())
-        y_scaled = self.y / self.max_scaler
+        # Scale target to [0, 1] for better prior specification and MCMC sampling
+        # (optionally in log1p space, see `log_transform`). All posterior
+        # quantities are in scaled space; `inverse_transform` maps back to the
+        # original units in the plot methods and get_demand_distribution.
+        y_work = np.log1p(self.y) if self.log_transform else self.y
+        self.max_scaler = float(y_work.max())
+        y_scaled = y_work / self.max_scaler
 
         with pm.Model(coords=self.ssm.coords):
             self._register_priors()
@@ -221,6 +232,24 @@ class UnivariateSSM(BaseForecaster):
 
             self.ssm.build_statespace_graph(y_scaled, mode="JAX")
             self.idata = pm.sample(nuts_sampler=sampler, **sampler_kwargs)
+
+    def inverse_transform(self, x):
+        """
+        Map model-space values back to original units.
+
+        Undoes the ``[0, 1]`` scaling and, when ``log_transform=True``, the
+        ``log1p`` transform. Works elementwise on numpy arrays and xarray
+        objects, so it must be applied to *samples* (before any summing or
+        averaging), not to already-aggregated quantities.
+
+        ``expm1`` maps the Gaussian model space to ``(-1, inf)``, so a deep
+        negative tail sample can still come back as a fraction between -1 and
+        0; those sub-unit remnants are clamped to 0 (sales are counts).
+        """
+        unscaled = x * self.max_scaler
+        if not self.log_transform:
+            return unscaled
+        return np.maximum(np.expm1(unscaled), 0.0)
 
     def smooth_and_filter(self, method: str = "cholesky") -> None:
         """
@@ -286,7 +315,7 @@ class UnivariateSSM(BaseForecaster):
             self.smooth_and_filter()
 
         obs = self.post_idata.smoothed_posterior_observed.isel(observed_state=0)
-        obs_stacked = obs.stack(sample=["chain", "draw"]) * self.max_scaler
+        obs_stacked = self.inverse_transform(obs.stack(sample=["chain", "draw"]))
 
         mean = obs_stacked.mean(dim="sample").values
         lower_95 = obs_stacked.quantile(0.025, dim="sample").values
@@ -327,7 +356,7 @@ class UnivariateSSM(BaseForecaster):
             raise ValueError("No forecast found. Please call `forecast()` first.")
 
         obs = self.forecast_idata["forecast_observed"].isel(observed_state=0)
-        obs_stacked = obs.stack(sample=["chain", "draw"]) * self.max_scaler
+        obs_stacked = self.inverse_transform(obs.stack(sample=["chain", "draw"]))
 
         mean = obs_stacked.mean(dim="sample").values
         lower_95 = obs_stacked.quantile(0.025, dim="sample").values
@@ -358,6 +387,10 @@ class UnivariateSSM(BaseForecaster):
 
         One subplot per state (e.g. level, slope, seasonal amplitudes, regression
         coefficients). Requires ``smooth_and_filter()`` to have been called first.
+
+        Note: when ``log_transform=True`` the components are additive in
+        ``log1p`` space, so they are plotted in that space (exponentiating an
+        individual component in isolation is not meaningful).
 
         Returns
         -------
@@ -429,12 +462,12 @@ class UnivariateSSM(BaseForecaster):
         )
         time_indices = np.where(mask)[0]
 
-        total = (
-            self.forecast_idata["forecast_observed"]
-            .isel(observed_state=0, time=time_indices)
-            .sum(dim="time")
-            * self.max_scaler
+        daily = self.inverse_transform(
+            self.forecast_idata["forecast_observed"].isel(
+                observed_state=0, time=time_indices
+            )
         )
+        total = daily.sum(dim="time")
 
         return total.to_dataset(name="demand")
 

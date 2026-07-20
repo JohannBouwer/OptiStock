@@ -81,8 +81,9 @@ class SyntheticControl(BaseCausalEstimator):
         Optional :class:`SyntheticControlPriors`. Defaults are CausalPy's:
         Dirichlet(1, ..., 1) on donor weights and HalfNormal(1) on sigma.
     sampler
-        PyMC NUTS sampler backend; ``"numpyro"`` (default) or ``"nutpie"`` to
-        match the existing forecasting models.
+        PyMC NUTS sampler backend; ``"nutpie"`` (default, matching the
+        forecasting models) or ``"numpyro"`` (requires the ``jax`` extra:
+        ``pip install optistock[jax]``).
     """
 
     def __init__(
@@ -94,7 +95,7 @@ class SyntheticControl(BaseCausalEstimator):
         date_col: str = "date",
         intervention_name: str = "intervention",
         priors: SyntheticControlPriors | None = None,
-        sampler: str = "numpyro",
+        sampler: str = "nutpie",
     ) -> None:
         if date_col not in data.columns:
             raise KeyError(f"date_col {date_col!r} not in data columns")
