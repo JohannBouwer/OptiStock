@@ -13,7 +13,7 @@ import xarray as xr
 from typing import Optional
 
 from .base import BaseForecaster
-from .priors import UnivariateSSMPriors
+from .priors import HierarchicalSSMPriors, UnivariateSSMPriors
 
 
 class UnivariateSSM(BaseForecaster):
@@ -472,6 +472,296 @@ class UnivariateSSM(BaseForecaster):
         return total.to_dataset(name="demand")
 
 
-# TODO: Multivariate model with shared components (e.g. common trend) and cross-series regression effects
+class HierarchicalSSM(UnivariateSSM):
+    """
+    Multi-item structural state-space forecaster with partial pooling.
+
+    A panel version of :class:`UnivariateSSM`: all items are fitted jointly in a
+    single multivariate structural model (``observed_state_names=items``). The
+    **seasonal amplitudes** and **regression (covariate) coefficients** are
+    partially pooled across items via hierarchical hyper-priors, so an item with
+    a short or noisy history borrows its seasonal shape and covariate response
+    from the population. Every other parameter (initial level, trend, and all
+    noise variances) stays independent per item.
+
+    Input is **wide-format**: a DataFrame indexed by date with one numeric column
+    per item, plus any exogenous columns. Items are inferred as all non-exog
+    columns if not supplied. Exogenous regressors are *shared* — the same
+    ``x_t`` drives every item, but each item learns its own (pooled) coefficient.
+
+    All per-item coefficients use a non-centred parameterisation to avoid funnel
+    pathologies under HMC.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Wide panel: date index (or ``date`` column via the index), one column per
+        item, plus any exogenous columns named in ``exog``.
+    items : list[str], optional
+        Item column names. Defaults to every column except those in ``exog``.
+    exog : list[str], optional
+        Exogenous regressor column names, shared across all items. Their
+        coefficients are the pooled ``beta_*`` family.
+    priors : HierarchicalSSMPriors, optional
+        Prior configuration. Defaults to :class:`HierarchicalSSMPriors`.
+    log_transform : bool
+        Fit on ``log1p`` of each series for non-negative forecasts (see
+        :class:`UnivariateSSM`). Default ``False``.
+    target_name : str
+        Label used to name the built state-space model. Default ``"sales"``.
+
+    Notes
+    -----
+    Compute scales worse than fitting items independently — roughly 2x for three
+    items and growing with item count, because the Kalman filter runs dense
+    operations over the stacked latent state. Prefer this model when items are
+    short/new or few; fit independently otherwise. Sampling the hierarchy needs
+    ``target_accept >= 0.95`` (pass it through ``fit``). ``P0`` is a single
+    scalar diagonal over the whole stacked state — crude for many items, adequate
+    for a first pass.
+    """
+
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        items: Optional[list[str]] = None,
+        exog: Optional[list[str]] = None,
+        priors: Optional[HierarchicalSSMPriors] = None,
+        log_transform: bool = False,
+        target_name: str = "sales",
+    ):
+        self.data = data.copy()
+        exog = list(exog) if exog is not None else []
+        if items is None:
+            items = [c for c in self.data.columns if c not in exog]
+        self.items = list(items)
+        # match the parent's {col: innovations} contract; innovations off for v1
+        self.exog = {c: False for c in exog}
+        self.target = target_name
+        self.y = self.data[self.items]  # wide frame (parent's self.y is a Series)
+        self.priors = priors or HierarchicalSSMPriors()
+        self.log_transform = log_transform
+        self.max_scaler: float = 1.0
+
+        self._seasonal_name: Optional[str] = None
+        self._seasonal_innovations = False
+
+        self.model = None
+        self.ssm = None
+        self.idata = None
+        self.post_idata = None
+        self.component_idata = None
+        self.forecast_idata = None
+
+    def build_model(
+        self,
+        trend_order: int = 2,
+        trend_innovations_order: int | list[int] = [0, 1],
+        seasonal_period: Optional[int] = None,
+        seasonal_harmonics: Optional[int] = None,
+        seasonal_innovations: bool = False,
+    ) -> None:
+        """
+        Compose the multivariate structural model.
+
+        Same components as :class:`UnivariateSSM.build_model`, but every
+        component carries ``observed_state_names=self.items`` so each item gets
+        its own (block-diagonal) latent states. ``seasonal_innovations``
+        defaults to ``False`` here: the pooled seasonal *shape* is static, which
+        keeps the first implementation simple.
+        """
+        self.model = st.LevelTrend(
+            order=trend_order,
+            innovations_order=trend_innovations_order,
+            observed_state_names=self.items,
+        )
+
+        for col, innovations in self.exog.items():
+            self.model += st.Regression(
+                name=col,
+                state_names=[col],
+                observed_state_names=self.items,
+                innovations=innovations,
+            )
+
+        self._seasonal_innovations = False
+        if seasonal_period is not None:
+            n_harmonics = seasonal_harmonics or seasonal_period // 2
+            self._seasonal_name = "seasonal"
+            self._seasonal_innovations = seasonal_innovations
+            self.model += st.FrequencySeasonality(
+                name=self._seasonal_name,
+                season_length=seasonal_period,
+                n=n_harmonics,
+                innovations=seasonal_innovations,
+                observed_state_names=self.items,
+            )
+
+        self.model += st.MeasurementError(
+            name=self._MEAS_ERROR_NAME, observed_state_names=self.items
+        )
+
+        self.ssm = self.model.build(name=self.target, mode="JAX")
+
+    def _build_pooled(self, param: str, dims, mu_prior, sigma_prior) -> None:
+        """
+        Non-centred hierarchical prior for a parameter pooled across items.
+
+        The leading dimension of ``dims`` is the item (``endog_*``) axis. The
+        hyper-priors ``<param>_mu`` / ``<param>_sigma`` live on the *remaining*
+        dims (one per harmonic / regressor), and the standardised ``<param>_z``
+        spans the full dims. ``param = mu + sigma * z``.
+        """
+        hyper_dims = tuple(dims[1:])
+        hyper_kwargs = {"dims": hyper_dims} if hyper_dims else {}
+        mu = mu_prior.build(f"{param}_mu", **hyper_kwargs)
+        sigma = sigma_prior.build(f"{param}_sigma", **hyper_kwargs)
+        z = pm.Normal(f"{param}_z", 0.0, 1.0, dims=dims)
+        pm.Deterministic(param, mu + sigma * z, dims=dims)
+
+    def _register_priors(self) -> None:
+        """
+        Register priors for every SSM parameter. Mirrors
+        :meth:`UnivariateSSM._register_priors`, but the ``params_*`` (seasonal)
+        and ``beta_*`` (regression) families are built hierarchically via
+        :meth:`_build_pooled`; all other families stay independent per item.
+        """
+        meas_sigma = f"sigma_{self._MEAS_ERROR_NAME}"
+        registered: set[str] = set()
+
+        for param, dims in self.ssm.param_dims.items():
+            if param.startswith("data_"):
+                continue
+
+            dim_kwargs = {"dims": dims} if dims else {}
+
+            if param == "P0":
+                P0_diag = self.priors.initial_state_cov.build("P0_diag")
+                pm.Deterministic(
+                    "P0", pt.eye(self.model.k_states) * P0_diag, dims=dims
+                )
+            elif param.startswith("initial_"):
+                self.priors.initial_state.build(param, **dim_kwargs)
+            elif param == meas_sigma:
+                # Multivariate: sigma_obs is a vector (one per item), so it carries
+                # an endog dim here — unlike the univariate scalar case.
+                self.priors.observation_noise.build(param, **dim_kwargs)
+            elif param.startswith("sigma_beta_"):
+                self.priors.regression_innovation.build(param, **dim_kwargs)
+            elif param.startswith("sigma_"):
+                self.priors.process_noise.build(param, **dim_kwargs)
+            elif param.startswith("beta_"):  # POOLED — covariate coefficients
+                self._build_pooled(
+                    param, dims,
+                    self.priors.regression_beta_mu, self.priors.regression_beta_sigma,
+                )
+            elif param.startswith("params_"):  # POOLED — seasonal amplitudes
+                self._build_pooled(
+                    param, dims,
+                    self.priors.seasonal_amplitude_mu, self.priors.seasonal_amplitude_sigma,
+                )
+            else:
+                continue
+            registered.add(param)
+
+        if meas_sigma not in registered:
+            self.priors.observation_noise.build(meas_sigma)
+
+        seasonal_sigma = f"sigma_{self._seasonal_name}" if self._seasonal_name else None
+        if (
+            seasonal_sigma
+            and seasonal_sigma not in registered
+            and self._seasonal_innovations
+        ):
+            self.priors.seasonal_innovation.build(seasonal_sigma)
+
+    def fit(self, sampler: str = "nutpie", **sampler_kwargs) -> None:
+        """
+        Register priors, build the state-space graph, and sample. Identical to
+        :meth:`UnivariateSSM.fit` except the target is a wide panel, so a single
+        global ``max_scaler`` is taken over all items (matching
+        ``HierarchicalBayesTimeSeries``).
+        """
+        y_work = np.log1p(self.y) if self.log_transform else self.y
+        self.max_scaler = float(np.nanmax(y_work.to_numpy(dtype=float)))
+        y_scaled = y_work / self.max_scaler
+
+        with pm.Model(coords=self.ssm.coords):
+            self._register_priors()
+
+            for col in self.exog:
+                pm.Data(
+                    f"data_{col}",
+                    self.data[[col]].values.astype(float),
+                    dims=("time", f"state_{col}"),
+                )
+
+            self.ssm.build_statespace_graph(y_scaled, mode="JAX")
+            self.idata = pm.sample(nuts_sampler=sampler, **sampler_kwargs)
+
+    def get_demand_distribution(
+        self, start_date: str, end_date: str, item: Optional[str] = None
+    ) -> xr.Dataset:
+        """
+        Posterior total demand over ``[start_date, end_date]`` in original units.
+
+        With ``item=None`` the result keeps the ``observed_state`` (item) dim;
+        passing ``item=<name>`` returns the single-item distribution in the same
+        shape as :class:`UnivariateSSM`, so it plugs straight into
+        ``ForecastSolver``. Non-negativity is enforced per sample by
+        ``inverse_transform`` before the time-sum.
+        """
+        if self.forecast_idata is None:
+            raise ValueError("No forecast found. Please call `forecast()` first.")
+
+        time_values = self.forecast_idata["time"].values
+        mask = (time_values >= np.datetime64(start_date)) & (
+            time_values <= np.datetime64(end_date)
+        )
+        time_indices = np.where(mask)[0]
+
+        obs = self.forecast_idata["forecast_observed"].isel(time=time_indices)
+        if item is not None:
+            obs = obs.sel(observed_state=item)
+        daily = self.inverse_transform(obs)
+        total = daily.sum(dim="time")
+
+        return total.to_dataset(name="demand")
+
+    def plot_forecast(self, item: Optional[str] = None) -> tuple:
+        """
+        Plot the forecast for one item (or the first item if ``item=None``).
+
+        Selects the named ``observed_state`` before delegating to the univariate
+        plotting logic.
+        """
+        if self.forecast_idata is None:
+            raise ValueError("No forecast found. Please call `forecast()` first.")
+
+        sel = item if item is not None else self.items[0]
+        obs = self.forecast_idata["forecast_observed"].sel(observed_state=sel)
+        obs_stacked = self.inverse_transform(obs.stack(sample=["chain", "draw"]))
+
+        mean = obs_stacked.mean(dim="sample").values
+        lower_95 = obs_stacked.quantile(0.025, dim="sample").values
+        upper_95 = obs_stacked.quantile(0.975, dim="sample").values
+        lower_50 = obs_stacked.quantile(0.25, dim="sample").values
+        upper_50 = obs_stacked.quantile(0.75, dim="sample").values
+
+        x = self.forecast_idata["time"].values
+
+        fig, ax = plt.subplots(figsize=(14, 4))
+        ax.plot(x, mean, color="tab:blue", label="Forecast Mean")
+        ax.fill_between(x, lower_95, upper_95, color="tab:blue", alpha=0.15, label="95% HDI")
+        ax.fill_between(x, lower_50, upper_50, color="tab:blue", alpha=0.35, label="50% HDI")
+        ax.set_title(f"{sel} — Out-of-sample Forecast")
+        ax.set_ylabel(sel)
+        ax.legend()
+        fig.tight_layout()
+        return fig, ax
+
+
+# TODO: shared-states / common-factor variant (share_states=True) for a single
+# latent level driving all items, plus per-item deviations.
 
 
