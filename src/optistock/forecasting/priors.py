@@ -250,3 +250,71 @@ class UnivariateSSMPriors(BasePriors):
         "Gamma", {"alpha": 2, "beta": 50},
         "Process noise for seasonal amplitudes (sigma_seasonal)",
     ))
+
+
+@dataclass
+class HierarchicalSSMPriors(BasePriors):
+    """
+    Priors for :class:`HierarchicalSSM` — a multi-item state-space model where
+    the **seasonal amplitudes** and **regression (covariate) coefficients** are
+    partially pooled across items, while every other parameter stays independent
+    per item.
+
+    Two naming conventions coexist, matching the two kinds of family:
+
+    * **Pooled families** (``seasonal_amplitude``, ``regression_beta``) declare
+      ``<family>_mu`` and ``<family>_sigma`` hyper-priors. Each per-item
+      coefficient is ``Normal(<family>_mu, <family>_sigma)`` built non-centred
+      (``mu + sigma * z``, ``z ~ Normal(0, 1)``). The hyper-priors are vector
+      valued over the non-item dimension — one ``mu``/``sigma`` per seasonal
+      harmonic or per regressor — so items pool separately for each.
+    * **Independent families** (everything else) keep the single-``Prior`` form
+      of :class:`UnivariateSSMPriors`; each item gets its own draw with no
+      shrinkage.
+
+    All values live in scaled [0, 1] space.
+    """
+
+    # --- Independent families (per item, no pooling) ---
+    initial_state_cov: Prior = field(default_factory=lambda: Prior(
+        "Gamma", {"alpha": 2, "beta": 10},
+        "Diagonal scale of the initial state covariance (P0_diag)",
+    ))
+    initial_state: Prior = field(default_factory=lambda: Prior(
+        "Normal", {"mu": 0.5, "sigma": 0.5},
+        "Per-item initial state values (initial_*)",
+    ))
+    observation_noise: Prior = field(default_factory=lambda: Prior(
+        "HalfNormal", {"sigma": 0.05},
+        "Per-item measurement noise (sigma_obs)",
+    ))
+    process_noise: Prior = field(default_factory=lambda: Prior(
+        "Gamma", {"alpha": 2, "beta": 50},
+        "Per-item process noise for trend / level / slope (sigma_*)",
+    ))
+    regression_innovation: Prior = field(default_factory=lambda: Prior(
+        "Gamma", {"alpha": 2, "beta": 50},
+        "Per-item innovation variance for time-varying regression coefs (sigma_beta_*)",
+    ))
+    seasonal_innovation: Prior = field(default_factory=lambda: Prior(
+        "Gamma", {"alpha": 2, "beta": 50},
+        "Per-item process noise for seasonal amplitudes (sigma_seasonal)",
+    ))
+
+    # --- Pooled families (partial pooling across items) ---
+    seasonal_amplitude_mu: Prior = field(default_factory=lambda: Prior(
+        "Normal", {"mu": 0.0, "sigma": 0.15},
+        "Population mean of per-item seasonal amplitudes (per harmonic)",
+    ))
+    seasonal_amplitude_sigma: Prior = field(default_factory=lambda: Prior(
+        "HalfNormal", {"sigma": 0.15},
+        "Population spread of per-item seasonal amplitudes (per harmonic)",
+    ))
+    regression_beta_mu: Prior = field(default_factory=lambda: Prior(
+        "Normal", {"mu": 0.0, "sigma": 0.5},
+        "Population mean of per-item regression coefficients (per regressor)",
+    ))
+    regression_beta_sigma: Prior = field(default_factory=lambda: Prior(
+        "HalfNormal", {"sigma": 0.5},
+        "Population spread of per-item regression coefficients (per regressor)",
+    ))

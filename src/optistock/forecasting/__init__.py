@@ -11,11 +11,12 @@ from .priors import (
     BasePriors,
     BayesTimeSeriesPriors,
     HierarchicalBayesTimeSeriesPriors,
+    HierarchicalSSMPriors,
     HSGPBayesTimeSeriesPriors,
     Prior,
     UnivariateSSMPriors,
 )
-from .state_space import UnivariateSSM
+from .state_space import HierarchicalSSM, UnivariateSSM
 
 __all__ = [
     "BARTBayesTimeSeries",
@@ -26,6 +27,8 @@ __all__ = [
     "BayesTimeSeriesPriors",
     "HierarchicalBayesTimeSeries",
     "HierarchicalBayesTimeSeriesPriors",
+    "HierarchicalSSM",
+    "HierarchicalSSMPriors",
     "HSGPBayesTimeSeries",
     "HSGPBayesTimeSeriesPriors",
     "MediaMixModel",
