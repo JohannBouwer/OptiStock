@@ -95,8 +95,8 @@ Swap `forecaster_class` for any other forecaster, switch `PeriodicOrderUpTo` for
 | Capability | Class(es) | Docs | Notebook |
 |---|---|---|---|
 | Bayesian demand forecasting (Fourier, BART, HSGP) | `BayesTimeSeries`, `BARTBayesTimeSeries`, `HSGPBayesTimeSeries` | [forecasting](docs/forecasting.md) | [4](notebooks/4_Forecasting_Example.ipynb) |
-| Hierarchical panel forecasting with partial pooling | `HierarchicalBayesTimeSeries` | [forecasting](docs/forecasting.md#hierarchicalbayestimeseries--panel-forecasting) | [9](notebooks/9_Hierarchical_Forecasting.ipynb) |
-| Bayesian Structural Time Series | `UnivariateSSM` | [forecasting](docs/forecasting.md#univariatessm--bayesian-structural-state-space) | [4](notebooks/4_Forecasting_Example.ipynb), [5](notebooks/5_Stockouts.ipynb) |
+| Hierarchical panel forecasting with partial pooling | `HierarchicalBayesTimeSeries`, `HierarchicalSSM` | [forecasting](docs/forecasting.md#hierarchicalbayestimeseries--panel-forecasting) | [9](notebooks/9_Hierarchical_Forecasting.ipynb), [12](notebooks/12_Hierarchical_StateSpace.ipynb) |
+| Bayesian Structural Time Series | `UnivariateSSM`, `HierarchicalSSM` | [forecasting](docs/forecasting.md#univariatessm--bayesian-structural-state-space) | [4](notebooks/4_Forecasting_Example.ipynb), [5](notebooks/5_Stockouts.ipynb), [12](notebooks/12_Hierarchical_StateSpace.ipynb) |
 | Marketing Mix Model (attribution + demand) | `MediaMixModel` | [forecasting](docs/forecasting.md#mediamixmodel--attribution--demand) | [4](notebooks/4_Forecasting_Example.ipynb) |
 | Causal calibration of event effects | `SyntheticControl`, `LiftConstraint` | [causal](docs/causal.md) | [10](notebooks/10_Causal_Calibration.ipynb) |
 | Configurable priors on every model | `*Priors`, `Prior` | [priors](docs/priors.md) | [8](notebooks/8_Advanced_Forecasting.ipynb) |
@@ -116,6 +116,6 @@ Swap `forecaster_class` for any other forecaster, switch `PeriodicOrderUpTo` for
 ## Where to go next
 
 - **See it on real data** → [notebook 11](notebooks/11_Bakery_Dataset.ipynb) — a worked end-to-end example on real French bakery sales: forecast, then decide. Against a policy that bakes the forecast mean, the newsvendor solver captures **~95% of the perfect-foresight profit** (vs ~85%), and still wins once random baking yield is added.
-- **Learn by example** → [notebooks/](notebooks/README.md) — 11 numbered notebooks building from the single-item newsvendor up to hierarchical forecasting and causal calibration.
+- **Learn by example** → [notebooks/](notebooks/README.md) — 12 numbered notebooks building from the single-item newsvendor up to hierarchical (state-space) forecasting and causal calibration.
 - **Look up a feature** → [docs/](docs/) — short narrative pages for each component, with pointers to the matching notebook.
 - **Use it in your project** → the install commands and quick-start above.
