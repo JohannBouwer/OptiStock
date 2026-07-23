@@ -20,6 +20,7 @@ demand samples.  Stock levels are then optimised using one of three objectives:
 
 from __future__ import annotations
 
+import inspect
 from abc import ABC, abstractmethod
 from typing import Literal
 
@@ -79,9 +80,12 @@ class ForecastSolver(Solver):
     ``BaseForecaster`` instances.
 
     Handles both single-item and multi-item problems.  For multi-item problems,
-    each item is paired with its own (univariate) forecaster.  A single shared
-    forecaster can be passed for the future multivariate case — see the
-    ``demand_key`` parameter.
+    each item is paired with its own (univariate) forecaster — or a **single
+    fitted panel forecaster** (``HierarchicalBayesTimeSeries``,
+    ``HierarchicalSSM``) can be shared across several problems: when the
+    forecaster's ``get_demand_distribution`` accepts an ``item`` argument, the
+    solver passes each problem's ``Item.name`` to select that item's demand
+    slice, so items are never mixed.
 
     Parameters
     ----------
@@ -89,7 +93,9 @@ class ForecastSolver(Solver):
         A single ``(item, forecaster)`` pair or a list of such pairs.
         Each forecaster must already be in a state where
         ``get_demand_distribution`` can be called (i.e. ``smooth_and_filter``
-        or ``forecast`` has been run).
+        or ``forecast`` has been run).  For a shared panel forecaster, each
+        paired ``Item.name`` must match one of the panel's item labels
+        (a mismatch raises a ``KeyError``).
     objective : {'SAA', 'CVaR', 'Utility'}
         Objective function used during optimisation. Default ``'SAA'``.
     limits : dict[str, float], optional
@@ -304,12 +310,22 @@ class ForecastSolver(Solver):
         Call each forecaster's ``get_demand_distribution`` and return a
         ``(n_items, n_samples)`` demand matrix.
 
+        Panel (multi-item) forecasters — those whose ``get_demand_distribution``
+        accepts an ``item`` argument, e.g. ``HierarchicalBayesTimeSeries`` and
+        ``HierarchicalSSM`` — are sliced per problem via ``item=item.name``, so a
+        single fitted panel model can be shared across several problems without
+        mixing items. Single-item forecasters are called exactly as before.
+
         When multiple forecasters return different numbers of samples,
         the matrix is trimmed to the shortest sample vector.
         """
         rows = []
-        for _, forecaster in self.problems:
-            dataset = forecaster.get_demand_distribution(start_date, end_date)
+        for item, forecaster in self.problems:
+            gdd = forecaster.get_demand_distribution
+            if "item" in inspect.signature(gdd).parameters:
+                dataset = gdd(start_date, end_date, item=item.name)
+            else:
+                dataset = gdd(start_date, end_date)
             samples = np.asarray(dataset["demand"].values, dtype=float).ravel()
             rows.append(samples)
 
