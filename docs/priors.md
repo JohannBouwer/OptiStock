@@ -1,6 +1,6 @@
 # Configurable Priors
 
-Every forecaster and the causal estimator accept a typed `*Priors` dataclass. Override one field, the entire prior, or swap the distribution outright — no monkey-patching of model internals.
+Every forecaster, the causal estimator, and the CLV models accept a typed `*Priors` dataclass. Override one field, the entire prior, or swap the distribution outright — no monkey-patching of model internals.
 
 ```python
 from optistock.forecasting import (
@@ -33,8 +33,11 @@ hmodel = HierarchicalBayesTimeSeries(df_wide, priors=hpriors)
 - `HierarchicalBayesTimeSeriesPriors`
 - `UnivariateSSMPriors` — uses family-grouped fields (trend / seasonal / observation)
 - `SyntheticControlPriors`
+- `ParetoNBDPriors`, `GammaGammaPriors` — see [clv](clv.md)
 
-All defined in `optistock/forecasting/priors.py` and `optistock/causal/priors.py`. Each ships sensible defaults — you only override what you want to change.
+All defined in `optistock/forecasting/priors.py`, `optistock/causal/priors.py`, and `optistock/clv/priors.py`. Each ships sensible defaults — you only override what you want to change.
+
+The CLV models are wrappers around `pymc-marketing`, which configures priors through its own `model_config` dict. `optistock.clv` translates the project `Prior` objects into that format for you, and its defaults reproduce `pymc-marketing`'s own — so omitting `priors=` behaves exactly like using the library directly.
 
 ## Inspecting a model's priors
 
