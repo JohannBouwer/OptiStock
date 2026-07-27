@@ -139,29 +139,48 @@ wheels = [
 
 [[package]]
 name = "arviz-base"
-version = "0.7.0"
+version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "lazy-loader" },
     { name = "numpy" },
     { name = "typing-extensions" },
     { name = "xarray" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d6/0b/b99cd50213748c866432402249edf0b0c618ec5d14f95c157e6de56fb7bc/arviz_base-0.7.0.tar.gz", hash = "sha256:d800c3c26171297b1022b3defa0cd0aab64a6cd0c28257fbcce3ca13dd7358cd", size = 1381567 }
+sdist = { url = "https://files.pythonhosted.org/packages/e6/d7/4db6e89b0cc5a26ce0e84accd5dd6ff43572eb32e9b46c577bd5d219ed6a/arviz_base-1.2.0.tar.gz", hash = "sha256:be06f9c15c53a951a971bef697e6b0a68497aae4d1670be065dd8f0482e9efca", size = 1410416 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/64/2812bb89a9bf0eead1965f7e7883ba2f194be1aef36bed0405fe8f240094/arviz_base-0.7.0-py3-none-any.whl", hash = "sha256:10fd2198709eee1b562e128e6d8dd814e24af1b7e6b385a3daba903dadac53f7", size = 1404134 },
+    { url = "https://files.pythonhosted.org/packages/37/d7/82e5f456d50b6accf06d137594282bf6984526fa1b329a061f7b91b123aa/arviz_base-1.2.0-py3-none-any.whl", hash = "sha256:a3f7023b665823068ff4b973bb6205eacc65f3c0a446cc099d7e5326b50f1ffc", size = 1427453 },
+]
+
+[[package]]
+name = "arviz-plots"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "arviz-base" },
+    { name = "arviz-stats", extra = ["xarray"] },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6e/d4/738cd3abcc27d681e9876a897d7bab4aa1ad0321257e1a65d2cdc52849bd/arviz_plots-1.2.0.tar.gz", hash = "sha256:e1f462aa0ac02fb957aabcae2cfcbee9bc089a029c94dab83fa2ed02d02098f3", size = 158834 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1a/06/85b6f3d07c8b0bd232c05c236188575074fcb9006174e5a5ca5b6dd12a9f/arviz_plots-1.2.0-py3-none-any.whl", hash = "sha256:2e16ed95ce6d6fbb171d60f7300f50c520ebeeb132be7539591a018076f66f16", size = 243949 },
+]
+
+[package.optional-dependencies]
+matplotlib = [
+    { name = "matplotlib" },
 ]
 
 [[package]]
 name = "arviz-stats"
-version = "0.7.0"
+version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "scipy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3f/1d/f86f7b02621f920bce13ba9882cb5ee733acefc7553b3bae0f04dfb325d9/arviz_stats-0.7.0.tar.gz", hash = "sha256:c04d2b888fc2ecf44bdaca3f950f62834d51ddcc97472f9aeec7c4808e598032", size = 121397 }
+sdist = { url = "https://files.pythonhosted.org/packages/4c/97/fd555a4b16ac349f297c786dab1a3270b3540677b0222a84e517441eb338/arviz_stats-1.2.0.tar.gz", hash = "sha256:fc49e6e75f4fce953987a9bf17dc39950e1f12e7cd73f865257e5d1b6a5ee114", size = 157554 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/97/59f31690c561b70f1e493375f5bd774bffd1597245b10d1a62024b7f12e3/arviz_stats-0.7.0-py3-none-any.whl", hash = "sha256:d61d3fe0f00d3a92cdad01ff1389edd32b7f128a7830ce2a668de26d32f9e786", size = 148951 },
+    { url = "https://files.pythonhosted.org/packages/96/8f/73f43d90534d49a4af4c8e35d5b60e2838435b0318f44262dc6fe2dd39d8/arviz_stats-1.2.0-py3-none-any.whl", hash = "sha256:f9084addeb1abdbab6e9816f0a063118bc4ff7c48ce9141a4dad20b0e41410ae", size = 183844 },
 ]
 
 [package.optional-dependencies]
@@ -668,6 +687,15 @@ wheels = [
 ]
 
 [[package]]
+name = "iniconfig"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484 },
+]
+
+[[package]]
 name = "ipykernel"
 version = "7.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1097,6 +1125,18 @@ wheels = [
 ]
 
 [[package]]
+name = "lazy-loader"
+version = "0.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/49/ac/21a1f8aa3777f5658576777ea76bfb124b702c520bbe90edf4ae9915eafa/lazy_loader-0.5.tar.gz", hash = "sha256:717f9179a0dbed357012ddad50a5ad3d5e4d9a0b8712680d4e687f5e6e6ed9b3", size = 15294 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8a/a1/8d812e53a5da1687abb10445275d41a8b13adb781bbf7196ddbcf8d88505/lazy_loader-0.5-py3-none-any.whl", hash = "sha256:ab0ea149e9c554d4ffeeb21105ac60bed7f3b4fd69b1d2360a4add51b170b005", size = 8044 },
+]
+
+[[package]]
 name = "llvmlite"
 version = "0.46.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1510,6 +1550,7 @@ dev = [
     { name = "kagglehub" },
     { name = "notebook" },
     { name = "numpyro" },
+    { name = "pytest" },
     { name = "streamlit" },
 ]
 
@@ -1525,10 +1566,10 @@ requires-dist = [
     { name = "numpyro", marker = "extra == 'jax'", specifier = ">=0.20.0" },
     { name = "nutpie", specifier = ">=0.10" },
     { name = "pandas", specifier = ">=2.0" },
-    { name = "pymc", specifier = ">=5.27.0" },
+    { name = "pymc", specifier = ">=5.28.1,<6" },
     { name = "pymc-bart", specifier = ">=0.11.0" },
-    { name = "pymc-extras", specifier = ">=0.8.0" },
-    { name = "pymc-marketing", specifier = ">=0.18.0" },
+    { name = "pymc-extras", specifier = ">=0.10.0" },
+    { name = "pymc-marketing", specifier = ">=0.19.4" },
     { name = "scipy", specifier = ">=1.16.3" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "xarray", specifier = ">=2025.12.0" },
@@ -1543,6 +1584,7 @@ dev = [
     { name = "kagglehub", specifier = ">=0.3" },
     { name = "notebook", specifier = ">=7.5.1" },
     { name = "numpyro", specifier = ">=0.20.0" },
+    { name = "pytest", specifier = ">=8" },
     { name = "streamlit", specifier = ">=1.52.2" },
 ]
 
@@ -1644,6 +1686,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/cf/86/0248f086a84f01b37aaec0fa567b397df1a119f73c16f6c7a9aac73ea309/platformdirs-4.5.1.tar.gz", hash = "sha256:61d5cdcc6065745cdd94f0f878977f8de9437be93de97c1c12f853c9c0cdcbda", size = 21715 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/28/3bfe2fa5a7b9c46fe7e13c97bda14c895fb10fa2ebf1d0abb90e0cea7ee1/platformdirs-4.5.1-py3-none-any.whl", hash = "sha256:d03afa3963c806a9bed9d5125c8f4cb2fdaf74a55ab60e5d59b3fde758104d31", size = 18731 },
+]
+
+[[package]]
+name = "pluggy"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538 },
 ]
 
 [[package]]
@@ -1861,7 +1912,7 @@ wheels = [
 
 [[package]]
 name = "pymc-extras"
-version = "0.8.0"
+version = "0.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "better-optimize" },
@@ -1871,21 +1922,23 @@ dependencies = [
     { name = "pytensor" },
     { name = "scikit-learn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/91/ce/79ab94e463bafe1abf4288596a557b1258bfe7edd79403af4651d6156bfc/pymc_extras-0.8.0.tar.gz", hash = "sha256:925a2507da51e03d75a5804639e6252beb2c957df57e5fc6764c9793d42f499a", size = 328845 }
+sdist = { url = "https://files.pythonhosted.org/packages/d4/47/34da12cf79abef7681048e12a93449f9cb08cf293e2409e81e705c67b55c/pymc_extras-0.10.0.tar.gz", hash = "sha256:e74b092ce0ea25be53e5517a473f7021fd285327c8b31464bec451a917d21339", size = 582645 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/f3/df01330d3abaf33928e8204f1d83adb68687789de7de3f9723877f30c760/pymc_extras-0.8.0-py3-none-any.whl", hash = "sha256:1c2db588f05a80c68a74f60e08e21b2467c5438c8ba15d084df245aa22eaae87", size = 263324 },
+    { url = "https://files.pythonhosted.org/packages/74/db/5077cac799cfdf139c3b9ff64184a2c437d4459d0da3cce5d5aeca29c177/pymc_extras-0.10.0-py3-none-any.whl", hash = "sha256:7ac910ee1f7081d68e9c8b726df4f0473280dc51c297ad8183e2a2ce7475e7f7", size = 273525 },
 ]
 
 [[package]]
 name = "pymc-marketing"
-version = "0.18.0"
+version = "0.19.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "arviz" },
+    { name = "arviz-plots", extra = ["matplotlib"] },
     { name = "matplotlib" },
     { name = "narwhals" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "patsy" },
     { name = "preliz" },
     { name = "pydantic" },
     { name = "pymc" },
@@ -1899,9 +1952,9 @@ dependencies = [
     { name = "xarray" },
     { name = "xarray-einstats" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3b/28/dc7a1cba0f0bb746933fc6273c434d2613eca69cf071315039de00b3e8bd/pymc_marketing-0.18.0.tar.gz", hash = "sha256:00fd360f86fc1913814f27b07d0c6803d52acdf5b9434811a6fded3a5a3b5257", size = 2994864 }
+sdist = { url = "https://files.pythonhosted.org/packages/12/d1/1d1bd589e350d748bd76e07dd34f2d613ae001c0e94be6e95f4b6b3c480a/pymc_marketing-0.19.4.tar.gz", hash = "sha256:6d13d528d091921e78d88c3f87372a0e26263af6dc8af978b0a32212ea2e76a2", size = 3441960 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/55/a8/bd111a8e6790861f57ecf9e1189cd186e54c8dd1f8e29ae538a0f43e7c81/pymc_marketing-0.18.0-py3-none-any.whl", hash = "sha256:6025c44d38f754704d5a659e4f9bdb3c4dc7782d83d0d5d61b29a1ce125844af", size = 462518 },
+    { url = "https://files.pythonhosted.org/packages/3b/e7/a0fe20d76945177eaca50201150215ddd3f10f23553efea7ac39564c3163/pymc_marketing-0.19.4-py3-none-any.whl", hash = "sha256:d7be641c07194516313e35e2dd0170100beab84afe3f8f91e9d4140d65596397", size = 566175 },
 ]
 
 [[package]]
@@ -1947,6 +2000,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/6f/d5/40692ea2d5154267aa2a5df626ed2f9a5789ab2ef67b5d1b89d018c5741e/pytensor-2.38.3-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:8d5200a924bf3e1fdb3dec276aa9e275a882881b036b776506f19f435663e199", size = 2197518 },
     { url = "https://files.pythonhosted.org/packages/77/bc/2b34f121a8e71458457f0bfcea0efad7fcd950655fef7dbb36876b95a56a/pytensor-2.38.3-cp312-cp312-win_amd64.whl", hash = "sha256:68a0d63573f8a2c8086a2d22b0ef5f44e1d7d003aa799eac1bae35519255f3b7", size = 1693101 },
     { url = "https://files.pythonhosted.org/packages/ce/13/2b4b61be1f38520818187e86d34c670cb21dd9dbe5e07fec3f514e519e90/pytensor-2.38.3-py2.py3-none-any.whl", hash = "sha256:5e51e84e82a4c7e14c47077fade2bffa97024388a2eb95167f4a33a125b4c83b", size = 1400629 },
+]
+
+[[package]]
+name = "pytest"
+version = "9.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
+    { name = "pygments" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536 },
 ]
 
 [[package]]

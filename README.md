@@ -99,6 +99,7 @@ Swap `forecaster_class` for any other forecaster, switch `PeriodicOrderUpTo` for
 | Bayesian Structural Time Series | `UnivariateSSM`, `HierarchicalSSM` | [forecasting](docs/forecasting.md#univariatessm--bayesian-structural-state-space) | [4](notebooks/4_Forecasting_Example.ipynb), [5](notebooks/5_Stockouts.ipynb), [12](notebooks/12_Hierarchical_StateSpace.ipynb) |
 | Marketing Mix Model (attribution + demand) | `MediaMixModel` | [forecasting](docs/forecasting.md#mediamixmodel--attribution--demand) | [4](notebooks/4_Forecasting_Example.ipynb) |
 | Causal calibration of event effects | `SyntheticControl`, `LiftConstraint` | [causal](docs/causal.md) | [10](notebooks/10_Causal_Calibration.ipynb) |
+| Customer lifetime value (frequency + spend) | `ParetoNBD`, `GammaGammaSpend` | [clv](docs/clv.md) | [intro](notebooks/intro_clv_models.ipynb) |
 | Configurable priors on every model | `*Priors`, `Prior` | [priors](docs/priors.md) | [8](notebooks/8_Advanced_Forecasting.ipynb) |
 | Unified single- / multi-item optimiser with constraints | `ForecastSolver`, `Item` | [solver](docs/solver.md) | [1](notebooks/1_Introduction.ipynb), [2](notebooks/2_Mulit_Item_and_constraints.ipynb) |
 | Stochastic yield (Beta / Discrete) | `BetaYield`, `DiscreteYield`, ... | [solver](docs/solver.md#multi-item-with-constraints-and-risk-aversion) | [3](notebooks/3_Yield_distributions.ipynb) |
@@ -109,6 +110,7 @@ Swap `forecaster_class` for any other forecaster, switch `PeriodicOrderUpTo` for
 
 - [`optistock/forecasting/`](src/optistock/forecasting/) — Bayesian forecasters and their `*Priors` dataclasses.
 - [`optistock/causal/`](src/optistock/causal/) — `SyntheticControl` and the `LiftConstraint` bridge into the forecasters.
+- [`optistock/clv/`](src/optistock/clv/) — customer lifetime value: `ParetoNBD` (frequency) and `GammaGammaSpend` (monetary value).
 - [`optistock/distributions/`](src/optistock/distributions/) — demand and yield distributions.
 - [`optistock/solvers.py`](src/optistock/solvers.py), [`optistock/items.py`](src/optistock/items.py), [`optistock/stockkeep.py`](src/optistock/stockkeep.py) — `ForecastSolver`, `Item`, and the four policy orchestrators.
 - [`optistock/plot_suite/`](src/optistock/plot_suite/) — visualisation utilities used by the forecasters and orchestrators.
