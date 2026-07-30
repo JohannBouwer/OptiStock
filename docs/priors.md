@@ -32,10 +32,22 @@ hmodel = HierarchicalBayesTimeSeries(df_wide, priors=hpriors)
 - `HSGPBayesTimeSeriesPriors`
 - `HierarchicalBayesTimeSeriesPriors`
 - `UnivariateSSMPriors` — uses family-grouped fields (trend / seasonal / observation)
+- `HierarchicalSSMPriors` — same families, plus `<family>_mu` / `<family>_sigma` hyper-priors for the pooled seasonal and regression coefficients
 - `SyntheticControlPriors`
 - `ParetoNBDPriors`, `GammaGammaPriors` — see [clv](clv.md)
 
 All defined in `optistock/forecasting/priors.py`, `optistock/causal/priors.py`, and `optistock/clv/priors.py`. Each ships sensible defaults — you only override what you want to change.
+
+## What scale are the numbers in?
+
+Most forecasters scale the target before fitting, so prior values are **not** in units of sales. For the state-space models (`UnivariateSSMPriors`, `HierarchicalSSMPriors`) the target is **standardised** — `(y_work - center) / scale`, where `y_work` is the target, optionally `log1p`-transformed. One unit therefore means **one standard deviation of the training data**, and the data is centred on zero.
+
+That is deliberate: it makes the same numbers valid in both raw and `log_transform` mode and across datasets, rather than being implicitly tied to one series' magnitude. Two consequences when overriding:
+
+- `initial_level` is zero-centred because the data is centred. `initial_slope` is separate and much tighter — it is a *per-step drift* that integrates into the level, so values that look small still move the forecast a long way (see the `trend_innovations_order` note in [forecasting.md](forecasting.md)).
+- `regression_beta` assumes regressors are scaled to roughly `O(1)`. Under `log_transform` a coefficient is a log-multiplier, so an unscaled spend column in currency units will fight its prior; the model warns at fit time when it spots one.
+
+The other forecasters (`BayesTimeSeries` and friends) divide the target by its maximum instead, so their priors live in `[0, 1]` space.
 
 The CLV models are wrappers around `pymc-marketing`, which configures priors through its own `model_config` dict. `optistock.clv` translates the project `Prior` objects into that format for you, and its defaults reproduce `pymc-marketing`'s own — so omitting `priors=` behaves exactly like using the library directly.
 

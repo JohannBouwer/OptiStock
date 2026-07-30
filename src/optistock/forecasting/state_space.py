@@ -10,6 +10,7 @@ import pandas as pd
 import pytensor.tensor as pt
 import xarray as xr
 
+import warnings
 from typing import Optional
 
 from .base import BaseForecaster
@@ -47,6 +48,11 @@ class UnivariateSSM(BaseForecaster):
         with ``expm1`` by :meth:`inverse_transform`, which every plot method
         and :meth:`get_demand_distribution` route through. Components become
         multiplicative in the original scale. Default ``False``.
+
+        Caveats worth knowing: ``log1p`` is not scale-free — the ``+1`` offset is
+        negligible for an item selling 300/day but dominant for one selling
+        2/day — and a Gaussian in ``log1p`` space is a poor approximation for
+        genuinely intermittent, low-count items.
     """
 
     _MEAS_ERROR_NAME = "obs"
@@ -65,7 +71,10 @@ class UnivariateSSM(BaseForecaster):
         self.exog = exog or {}
         self.priors = priors or UnivariateSSMPriors()
         self.log_transform = log_transform
-        self.max_scaler: float = 1.0  # set in fit()
+        # Standardisation constants, set in fit(). `scale` is always a scalar;
+        # `center` is a scalar here and a per-item vector in HierarchicalSSM.
+        self.center: float = 0.0
+        self.scale: float = 1.0
 
         self._seasonal_name: Optional[str] = None
 
@@ -75,10 +84,48 @@ class UnivariateSSM(BaseForecaster):
         self.post_idata = None
         self.component_idata = None
 
+    @staticmethod
+    def _resolve_trend_innovations(
+        trend_order: int, mask: Optional[int | list[int]]
+    ) -> int | list[int]:
+        """
+        Fill in the default trend-innovations mask and validate its length.
+
+        pymc-extras treats ``innovations_order`` as a boolean mask and indexes
+        the trend states with it directly, so a wrong length surfaces as
+        ``boolean index did not match indexed array`` from deep inside the build
+        — which says nothing about what the caller got wrong. Catch it here.
+
+        ``None`` means innovations on the **level only** (``[1, 0, ...]``): a
+        random walk in the level with a fixed slope, whose forecast sd grows
+        like ``sqrt(h)`` rather than the ``sqrt(h**3/3)`` of a drifting slope.
+        """
+        if mask is None:
+            return [1] + [0] * (trend_order - 1)
+        if isinstance(mask, (int, np.integer)) and not isinstance(mask, bool):
+            return int(mask)
+
+        mask = [int(v) for v in mask]
+        default = [1] + [0] * (trend_order - 1)
+        if len(mask) != trend_order:
+            raise ValueError(
+                f"trend_innovations_order is a boolean mask over the {trend_order} "
+                f"trend state(s), so it needs exactly {trend_order} entries — got "
+                f"{mask!r} ({len(mask)}). It is not a list of state indices. "
+                f"For innovations on the level only pass {default!r}; "
+                f"for a drifting slope pass {[0] + [1] * (trend_order - 1)!r}."
+            )
+        if any(v not in (0, 1) for v in mask):
+            raise ValueError(
+                f"trend_innovations_order is a boolean mask, so every entry must "
+                f"be 0 or 1 — got {mask!r}."
+            )
+        return mask
+
     def build_model(
         self,
         trend_order: int = 2,
-        trend_innovations_order: int | list[int] = [0, 1],
+        trend_innovations_order: Optional[int | list[int]] = None,
         seasonal_period: Optional[int] = None,
         seasonal_harmonics: Optional[int] = None,
         seasonal_innovations: bool = True,
@@ -91,10 +138,23 @@ class UnivariateSSM(BaseForecaster):
         trend_order : int
             Polynomial order of the trend component.
             1 = local level, 2 = local linear trend (level + slope).
-        trend_innovations_order : int or list[int]
-            Which trend states receive stochastic innovations.
-            ``[0, 1]`` lets both level and slope drift; ``[1]`` fixes the level
-            but allows the slope to drift (smooth trend); ``0`` removes all drift.
+        trend_innovations_order : int or list[int], optional
+            Boolean **mask** (not a list of indices) over the trend states saying
+            which of them receive stochastic innovations. With ``trend_order=2``
+            the states are ``(level, slope)``, so:
+
+            * ``[1, 0]`` (**default**) — the level drifts, the slope is fixed.
+              A random walk with constant drift: forecast sd grows like
+              ``sqrt(h)``. This is the conservative choice.
+            * ``[0, 1]`` — the level is fixed and the slope drifts, making the
+              level an *integrated* random walk whose forecast sd grows like
+              ``sqrt(h**3 / 3)``, i.e. cubic in the horizon. Flexible, but it
+              fans out fast; tighten ``priors.process_noise`` if you use it.
+            * ``[1, 1]`` — both drift.  * ``0`` — no drift at all.
+
+            Defaults to innovations on the level only. The mask must have exactly
+            ``trend_order`` entries; a wrong length raises a clear error here
+            rather than an opaque one inside pymc-extras.
         seasonal_period : int, optional
             Number of time steps per seasonal cycle (e.g. 7 for weekly).
             Omit to exclude a seasonal component.
@@ -105,7 +165,9 @@ class UnivariateSSM(BaseForecaster):
         """
         self.model = st.LevelTrend(
             order=trend_order,
-            innovations_order=trend_innovations_order,
+            innovations_order=self._resolve_trend_innovations(
+                trend_order, trend_innovations_order
+            ),
         )
 
         for col, innovations in self.exog.items():
@@ -142,7 +204,7 @@ class UnivariateSSM(BaseForecaster):
         Prefix / name     Priors family field
         ================  =====================================================
         ``P0``            ``initial_state_cov``
-        ``initial_*``     ``initial_state``
+        ``initial_*``     ``initial_level`` + ``initial_slope`` (split)
         ``sigma_obs``     ``observation_noise``
         ``sigma_beta_*``  ``regression_innovation``
         ``sigma_*``       ``process_noise``
@@ -172,7 +234,7 @@ class UnivariateSSM(BaseForecaster):
                     dims=dims,
                 )
             elif param.startswith("initial_"):
-                self.priors.initial_state.build(param, **dim_kwargs)
+                self._build_initial_trend(param, dims)
             elif param == meas_sigma:
                 self.priors.observation_noise.build(param)
             elif param.startswith("sigma_beta_"):
@@ -200,6 +262,74 @@ class UnivariateSSM(BaseForecaster):
         ):
             self.priors.seasonal_innovation.build(seasonal_sigma)
 
+    def _build_initial_trend(self, param: str, dims) -> None:
+        """
+        Build the initial trend state, with the level and slope given separate
+        priors.
+
+        ``initial_level_trend`` is a vector over ``state_level_trend``, whose
+        entries are ``(level, slope, ...)`` — a single prior across all of them
+        is wrong, because the level sits wherever the data sits while the slope
+        is a *per-step drift* that has to start near zero. The two are assembled
+        into the vector the SSM expects via ``pm.Deterministic``, following the
+        same pattern as ``P0`` above.
+
+        Handles the univariate case (``dims == ("state_level_trend",)``) and the
+        panel case, where ``dims`` carries a leading item axis.
+        """
+        n_states = len(self.ssm.coords[dims[-1]])
+        lead_shape = tuple(len(self.ssm.coords[d]) for d in dims[:-1])
+
+        level = self.priors.initial_level.build(
+            f"{param}_level", shape=lead_shape + (1,)
+        )
+        if n_states == 1:  # trend_order=1, local level only
+            pm.Deterministic(param, level, dims=dims)
+            return
+
+        slope = self.priors.initial_slope.build(
+            f"{param}_slope", shape=lead_shape + (n_states - 1,)
+        )
+        pm.Deterministic(param, pt.concatenate([level, slope], axis=-1), dims=dims)
+
+    def _warn_unscaled_exog(self) -> None:
+        """
+        Warn when an exogenous column is far from O(1).
+
+        ``priors.regression_beta`` is specified on the assumption that a one-unit
+        move in the regressor is a meaningful change. Under ``log_transform`` a
+        beta is a *log-multiplier*, so feeding in a raw spend column in currency
+        units puts the coefficient many orders of magnitude away from its prior.
+        """
+        for col in self.exog:
+            magnitude = float(np.nanmax(np.abs(self.data[col].to_numpy(dtype=float))))
+            if magnitude > 0 and not (0.01 <= magnitude <= 100):
+                warnings.warn(
+                    f"Exogenous column {col!r} has max absolute value {magnitude:.4g}. "
+                    "Priors on beta_* assume regressors are scaled to ~O(1); rescale "
+                    "the column (or widen priors.regression_beta) or the coefficient "
+                    "will be fighting its prior.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+
+    def _standardise(self, y_work):
+        """
+        Compute ``center`` / ``scale`` and return the standardised target.
+
+        Split out so :class:`HierarchicalSSM` can centre per item while keeping a
+        single global scale. NaNs are ignored throughout, so the stockout
+        censoring path (masking observations with ``NaN``) still works.
+        """
+        self.center = float(np.nanmean(y_work.to_numpy(dtype=float)))
+        self.scale = float(np.nanstd(y_work.to_numpy(dtype=float)))
+        if not self.scale > 0:
+            raise ValueError(
+                f"{self.target!r} has zero variance after transformation; "
+                "cannot standardise a constant series."
+            )
+        return (y_work - self.center) / self.scale
+
     def fit(self, sampler: str = "nutpie", **sampler_kwargs) -> None:
         """
         Register priors, build the statespace graph, and draw posterior samples.
@@ -212,13 +342,14 @@ class UnivariateSSM(BaseForecaster):
         **sampler_kwargs
             Additional keyword arguments forwarded to ``pm.sample``.
         """
-        # Scale target to [0, 1] for better prior specification and MCMC sampling
-        # (optionally in log1p space, see `log_transform`). All posterior
-        # quantities are in scaled space; `inverse_transform` maps back to the
-        # original units in the plot methods and get_demand_distribution.
+        # Standardise the target (optionally in log1p space, see `log_transform`)
+        # so that one unit means one standard deviation of the training data.
+        # That is what makes the priors portable between raw and log mode and
+        # across datasets. All posterior quantities live in this standardised
+        # space; `inverse_transform` maps back to the original units.
         y_work = np.log1p(self.y) if self.log_transform else self.y
-        self.max_scaler = float(y_work.max())
-        y_scaled = y_work / self.max_scaler
+        y_scaled = self._standardise(y_work)
+        self._warn_unscaled_exog()
 
         with pm.Model(coords=self.ssm.coords):
             self._register_priors()
@@ -233,20 +364,34 @@ class UnivariateSSM(BaseForecaster):
             self.ssm.build_statespace_graph(y_scaled, mode="JAX")
             self.idata = pm.sample(nuts_sampler=sampler, **sampler_kwargs)
 
+    def _center_for(self, x):
+        """
+        The centring constant matching ``x``. Scalar here; overridden in
+        :class:`HierarchicalSSM`, where it is selected per item.
+        """
+        return self.center
+
     def inverse_transform(self, x):
         """
         Map model-space values back to original units.
 
-        Undoes the ``[0, 1]`` scaling and, when ``log_transform=True``, the
+        Undoes the standardisation and, when ``log_transform=True``, the
         ``log1p`` transform. Works elementwise on numpy arrays and xarray
         objects, so it must be applied to *samples* (before any summing or
         averaging), not to already-aggregated quantities.
+
+        No ``sigma**2 / 2`` lognormal bias correction is applied, and none is
+        wanted: ``forecast_observed`` and ``smoothed_posterior_observed`` are
+        already full posterior *predictive* draws (pymc-extras adds the
+        measurement covariance ``H``), so averaging ``expm1`` over draws is a
+        Monte-Carlo estimate of ``E[y]``. An analytic correction on top would
+        double-count the observation noise.
 
         ``expm1`` maps the Gaussian model space to ``(-1, inf)``, so a deep
         negative tail sample can still come back as a fraction between -1 and
         0; those sub-unit remnants are clamped to 0 (sales are counts).
         """
-        unscaled = x * self.max_scaler
+        unscaled = x * self.scale + self._center_for(x)
         if not self.log_transform:
             return unscaled
         return np.maximum(np.expm1(unscaled), 0.0)
@@ -392,6 +537,9 @@ class UnivariateSSM(BaseForecaster):
         ``log1p`` space, so they are plotted in that space (exponentiating an
         individual component in isolation is not meaningful).
 
+        Only the level state is re-centred; every other component is a
+        *deviation* around it and so takes the scale alone.
+
         Returns
         -------
         tuple
@@ -403,12 +551,14 @@ class UnivariateSSM(BaseForecaster):
         states = self.component_idata.coords["state"].values
         component_hdi = az.hdi(self.component_idata, hdi_prob=0.95)
         x = self.data.index
+        units = f"log1p({self.target})" if self.log_transform else self.target
 
         fig, axes = plt.subplots(len(states), 1, figsize=(14, 3 * len(states)))
         if len(states) == 1:
             axes = [axes]
 
         for ax, state in zip(axes, states):
+            offset = self._component_offset(state)
             mean = (
                 self.component_idata.stack(sample=["chain", "draw"])[
                     "smoothed_posterior"
@@ -416,19 +566,36 @@ class UnivariateSSM(BaseForecaster):
                 .sel(state=state)
                 .mean(dim="sample")
                 .values
-                * self.max_scaler
+                * self.scale
+                + offset
             )
-            hdi_vals = component_hdi.smoothed_posterior.sel(state=state).values * self.max_scaler
+            hdi_vals = (
+                component_hdi.smoothed_posterior.sel(state=state).values * self.scale
+                + offset
+            )
 
             ax.plot(x, mean, color="tab:orange")
             ax.fill_between(
                 x, hdi_vals[:, 0], hdi_vals[:, 1], color="tab:orange", alpha=0.2
             )
             ax.set_title(state.replace("_", " ").title())
-            ax.set_ylabel(self.target)
+            ax.set_ylabel(units)
 
         fig.tight_layout()
         return fig, np.asarray(axes)
+
+    # Name `extract_components_from_idata` gives the level sub-component. The
+    # univariate form is exactly this; the panel form is `_LEVEL_COMPONENT[<item>]]`.
+    _LEVEL_COMPONENT = "level_trend[level]"
+
+    def _component_offset(self, state: str) -> float:
+        """
+        Centring constant to add back when plotting a single latent state.
+
+        Only the level carries the data's centre; slope, seasonal and regression
+        states are deviations around it and get none.
+        """
+        return self.center if state == self._LEVEL_COMPONENT else 0.0
 
     def get_demand_distribution(self, start_date: str, end_date: str) -> xr.Dataset:
         """
@@ -541,7 +708,10 @@ class HierarchicalSSM(UnivariateSSM):
         self.y = self.data[self.items]  # wide frame (parent's self.y is a Series)
         self.priors = priors or HierarchicalSSMPriors()
         self.log_transform = log_transform
-        self.max_scaler: float = 1.0
+        # `center` is per item (an xr.DataArray over observed_state); `scale` is
+        # a single global scalar. See `_standardise` for why.
+        self.center: xr.DataArray | float = 0.0
+        self.scale: float = 1.0
 
         self._seasonal_name: Optional[str] = None
         self._seasonal_innovations = False
@@ -556,7 +726,7 @@ class HierarchicalSSM(UnivariateSSM):
     def build_model(
         self,
         trend_order: int = 2,
-        trend_innovations_order: int | list[int] = [0, 1],
+        trend_innovations_order: Optional[int | list[int]] = None,
         seasonal_period: Optional[int] = None,
         seasonal_harmonics: Optional[int] = None,
         seasonal_innovations: bool = False,
@@ -572,7 +742,9 @@ class HierarchicalSSM(UnivariateSSM):
         """
         self.model = st.LevelTrend(
             order=trend_order,
-            innovations_order=trend_innovations_order,
+            innovations_order=self._resolve_trend_innovations(
+                trend_order, trend_innovations_order
+            ),
             observed_state_names=self.items,
         )
 
@@ -641,7 +813,7 @@ class HierarchicalSSM(UnivariateSSM):
                     "P0", pt.eye(self.model.k_states) * P0_diag, dims=dims
                 )
             elif param.startswith("initial_"):
-                self.priors.initial_state.build(param, **dim_kwargs)
+                self._build_initial_trend(param, dims)
             elif param == meas_sigma:
                 # Multivariate: sigma_obs is a vector (one per item), so it carries
                 # an endog dim here — unlike the univariate scalar case.
@@ -675,16 +847,67 @@ class HierarchicalSSM(UnivariateSSM):
         ):
             self.priors.seasonal_innovation.build(seasonal_sigma)
 
+    def _standardise(self, y_work):
+        """
+        Centre **per item** but scale by a single **global** constant.
+
+        The asymmetry is deliberate. In log space a seasonal or promotional
+        effect is a scale-free multiplicative offset — a 20% Friday uplift is
+        0.18 log units whether the item sells 30 or 700 a day — so dividing every
+        item by the same constant is what keeps the *pooled* ``params_*`` and
+        ``beta_*`` coefficients on a common footing. A per-item scale would put
+        each item's coefficients in its own units and quietly break the pooling.
+
+        Centring, by contrast, should be per item: the level state is per item
+        and unpooled, so centring each series is what lets a single
+        ``initial_level`` prior serve items of wildly different sizes.
+        """
+        values = y_work.to_numpy(dtype=float)
+        self.center = xr.DataArray(
+            np.nanmean(values, axis=0),
+            dims=("observed_state",),
+            coords={"observed_state": list(self.items)},
+        )
+        centered = y_work - self.center.to_series().reindex(y_work.columns).to_numpy()
+        self.scale = float(np.nanstd(centered.to_numpy(dtype=float)))
+        if not self.scale > 0:
+            raise ValueError(
+                "Panel has zero variance after transformation; cannot standardise."
+            )
+        return centered / self.scale
+
+    def _center_for(self, x):
+        """
+        Select the per-item centre matching ``x``.
+
+        ``x`` may carry ``observed_state`` as a full dimension (all items) or as
+        a scalar coordinate (after ``.sel(observed_state=...)``); ``.sel`` handles
+        both and keeps xarray from broadcasting the wrong item back in.
+        """
+        if isinstance(x, (xr.DataArray, xr.Dataset)) and "observed_state" in x.coords:
+            return self.center.sel(observed_state=x.coords["observed_state"])
+        return self.center
+
+    def _component_offset(self, state: str):
+        """
+        Per-item centring for the level states, named ``level_trend[level[<item>]]``.
+        """
+        prefix = f"{self._LEVEL_COMPONENT[:-1]}["  # "level_trend[level["
+        if state.startswith(prefix) and state.endswith("]]"):
+            item = state[len(prefix) : -2]
+            return float(self.center.sel(observed_state=item))
+        return 0.0
+
     def fit(self, sampler: str = "nutpie", **sampler_kwargs) -> None:
         """
         Register priors, build the state-space graph, and sample. Identical to
-        :meth:`UnivariateSSM.fit` except the target is a wide panel, so a single
-        global ``max_scaler`` is taken over all items (matching
-        ``HierarchicalBayesTimeSeries``).
+        :meth:`UnivariateSSM.fit` except the target is a wide panel, so the
+        standardisation centres each item separately while sharing one global
+        scale (see :meth:`_standardise`).
         """
         y_work = np.log1p(self.y) if self.log_transform else self.y
-        self.max_scaler = float(np.nanmax(y_work.to_numpy(dtype=float)))
-        y_scaled = y_work / self.max_scaler
+        y_scaled = self._standardise(y_work)
+        self._warn_unscaled_exog()
 
         with pm.Model(coords=self.ssm.coords):
             self._register_priors()

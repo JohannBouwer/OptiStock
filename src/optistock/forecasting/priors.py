@@ -215,35 +215,68 @@ class UnivariateSSMPriors(BasePriors):
     Priors for :class:`UnivariateSSM`, grouped by **family** rather than per
     individual parameter (matches the dynamic structure of ``_register_priors``).
 
-    All values live in scaled [0, 1] space.
+    All values live in **standardised space**: the model fits
+    ``(y_work - center) / scale``, where ``y_work`` is the target (optionally
+    ``log1p``-transformed). One unit therefore means *one standard deviation of
+    the training data*, and the data has mean 0 — so these numbers carry over
+    unchanged between raw and ``log_transform`` mode, and between datasets.
+
+    Note on ``process_noise``: it is calibrated for the **default** trend mask
+    ``innovations_order=[1, 0]`` — the innovation lands on the *level*, giving a
+    random walk with constant drift whose forecast sd grows like
+    ``sigma * sqrt(h)``. On the bakery holdout this beats a drifting slope by
+    3-4 SMAPE points at horizons of 1-2 weeks, which is the range that matches a
+    ``lead_time + review_period`` planning window.
+
+    If you switch to ``[0, 1]`` (innovation on the *slope*), the level becomes an
+    *integrated* random walk and its forecast sd grows like
+    ``sigma * sqrt(h**3 / 3)`` — cubic in the horizon, roughly **17x** wider at
+    ``h=30``. The same ``process_noise`` is then far too loose; tighten it by
+    about an order of magnitude (``beta`` around 100 rather than 25).
+
+    At long horizons (``h`` approaching 30) the two masks tie on SMAPE, but the
+    level random walk's wider predictive variance inflates the back-transformed
+    **mean** under ``log_transform`` (``E[y] = exp(mu + sigma**2/2)``). The mean
+    is still the right quantity for expected demand and the newsvendor; if you
+    want a point forecast at long range, prefer the posterior median.
     """
 
     initial_state_cov: Prior = field(default_factory=lambda: Prior(
-        "Gamma", {"alpha": 2, "beta": 10},
-        "Diagonal scale of the initial state covariance (P0_diag)",
+        "Gamma", {"alpha": 2, "beta": 100},
+        "Diagonal scale of the initial state covariance (P0_diag). One scalar "
+        "covers every state including the slope, so it is kept tight.",
     ))
-    initial_state: Prior = field(default_factory=lambda: Prior(
-        "Normal", {"mu": 0.5, "sigma": 0.5},
-        "Initial state values (initial_*)",
+    initial_level: Prior = field(default_factory=lambda: Prior(
+        "Normal", {"mu": 0.0, "sigma": 1.0},
+        "Initial level state. Zero-centred because the data is centred.",
+    ))
+    initial_slope: Prior = field(default_factory=lambda: Prior(
+        "Normal", {"mu": 0.0, "sigma": 0.02},
+        "Initial slope (and any higher trend state). Near zero: this is a "
+        "per-step drift that integrates into the level.",
     ))
     observation_noise: Prior = field(default_factory=lambda: Prior(
-        "HalfNormal", {"sigma": 0.05},
-        "Measurement noise (sigma_obs)",
+        "HalfNormal", {"sigma": 0.5},
+        "Measurement noise (sigma_obs), in data standard deviations",
     ))
     regression_beta: Prior = field(default_factory=lambda: Prior(
-        "HalfNormal", {"sigma": 0.5},
-        "Regression coefficient magnitudes (beta_*); assumes regressors scaled to ~O(1)",
+        "Normal", {"mu": 0.0, "sigma": 0.5},
+        "Regression coefficients (beta_*); assumes regressors scaled to ~O(1). "
+        "Zero-centred so an effect may be negative.",
     ))
     regression_innovation: Prior = field(default_factory=lambda: Prior(
         "Gamma", {"alpha": 2, "beta": 50},
-        "Innovation variance for time-varying regression coefs (sigma_beta_*)",
+        "Innovation sd for time-varying regression coefs (sigma_beta_*)",
     ))
     process_noise: Prior = field(default_factory=lambda: Prior(
-        "Gamma", {"alpha": 2, "beta": 50},
-        "Process noise for trend / level / slope (sigma_*)",
+        "Gamma", {"alpha": 2, "beta": 25},
+        "Process noise for the trend states (sigma_*). Mean 0.08, calibrated for "
+        "the default level-innovation mask on the bakery holdout; only weakly "
+        "informative in practice, since the posterior lands near 0.13-0.22 for "
+        "beta anywhere in 15-100. See the class note before changing the mask.",
     ))
     seasonal_amplitude: Prior = field(default_factory=lambda: Prior(
-        "Normal", {"mu": 0.0, "sigma": 0.15},
+        "Normal", {"mu": 0.0, "sigma": 0.3},
         "Initial seasonal amplitudes (params_*)",
     ))
     seasonal_innovation: Prior = field(default_factory=lambda: Prior(
@@ -272,29 +305,43 @@ class HierarchicalSSMPriors(BasePriors):
       of :class:`UnivariateSSMPriors`; each item gets its own draw with no
       shrinkage.
 
-    All values live in scaled [0, 1] space.
+    All values live in **standardised space**, exactly as in
+    :class:`UnivariateSSMPriors`. For the panel this means a **per-item centre**
+    and a single **global scale**: in log space a seasonal or promotional effect
+    is a scale-free multiplicative offset (a 20% Friday uplift is 0.18 log units
+    for a 30-unit item and a 700-unit item alike), so a common divisor is what
+    keeps the pooled ``params_*`` and ``beta_*`` coefficients comparable across
+    items. Centring per item is what lets one ``initial_level`` prior serve every
+    item regardless of its size.
     """
 
     # --- Independent families (per item, no pooling) ---
     initial_state_cov: Prior = field(default_factory=lambda: Prior(
-        "Gamma", {"alpha": 2, "beta": 10},
-        "Diagonal scale of the initial state covariance (P0_diag)",
+        "Gamma", {"alpha": 2, "beta": 100},
+        "Diagonal scale of the initial state covariance (P0_diag). A single "
+        "scalar over the whole stacked state — crude for many items.",
     ))
-    initial_state: Prior = field(default_factory=lambda: Prior(
-        "Normal", {"mu": 0.5, "sigma": 0.5},
-        "Per-item initial state values (initial_*)",
+    initial_level: Prior = field(default_factory=lambda: Prior(
+        "Normal", {"mu": 0.0, "sigma": 1.0},
+        "Per-item initial level state. Zero-centred because each item is centred.",
+    ))
+    initial_slope: Prior = field(default_factory=lambda: Prior(
+        "Normal", {"mu": 0.0, "sigma": 0.02},
+        "Per-item initial slope (and any higher trend state)",
     ))
     observation_noise: Prior = field(default_factory=lambda: Prior(
-        "HalfNormal", {"sigma": 0.05},
+        "HalfNormal", {"sigma": 0.5},
         "Per-item measurement noise (sigma_obs)",
     ))
     process_noise: Prior = field(default_factory=lambda: Prior(
-        "Gamma", {"alpha": 2, "beta": 50},
-        "Per-item process noise for trend / level / slope (sigma_*)",
+        "Gamma", {"alpha": 2, "beta": 25},
+        "Per-item process noise for the trend states (sigma_*). Kept in step "
+        "with UnivariateSSMPriors.process_noise — see the trend-mask note there "
+        "before changing either.",
     ))
     regression_innovation: Prior = field(default_factory=lambda: Prior(
         "Gamma", {"alpha": 2, "beta": 50},
-        "Per-item innovation variance for time-varying regression coefs (sigma_beta_*)",
+        "Per-item innovation sd for time-varying regression coefs (sigma_beta_*)",
     ))
     seasonal_innovation: Prior = field(default_factory=lambda: Prior(
         "Gamma", {"alpha": 2, "beta": 50},
@@ -303,11 +350,11 @@ class HierarchicalSSMPriors(BasePriors):
 
     # --- Pooled families (partial pooling across items) ---
     seasonal_amplitude_mu: Prior = field(default_factory=lambda: Prior(
-        "Normal", {"mu": 0.0, "sigma": 0.15},
+        "Normal", {"mu": 0.0, "sigma": 0.3},
         "Population mean of per-item seasonal amplitudes (per harmonic)",
     ))
     seasonal_amplitude_sigma: Prior = field(default_factory=lambda: Prior(
-        "HalfNormal", {"sigma": 0.15},
+        "HalfNormal", {"sigma": 0.3},
         "Population spread of per-item seasonal amplitudes (per harmonic)",
     ))
     regression_beta_mu: Prior = field(default_factory=lambda: Prior(

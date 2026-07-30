@@ -596,8 +596,18 @@ class BaseStockKeep:
         """Per-period posterior mean in original (unscaled) units, or None."""
         try:
             if isinstance(forecaster, UnivariateSSM):
-                obs = forecaster.forecast_idata["forecast_observed"].isel(observed_state=0)
-                return obs.stack(sample=["chain", "draw"]).mean(dim="sample").values
+                obs = forecaster.forecast_idata["forecast_observed"]
+                if obs.sizes.get("observed_state", 1) > 1:
+                    # Panel model: nothing here says which item is wanted, and
+                    # picking the first one silently would be worse than failing.
+                    return None
+                obs = obs.isel(observed_state=0)
+                # Invert on the draws, then average: expm1 does not commute with
+                # the mean, so averaging first would bias the result downwards.
+                daily = forecaster.inverse_transform(
+                    obs.stack(sample=["chain", "draw"])
+                )
+                return daily.mean(dim="sample").values
 
             if isinstance(forecaster, MediaMixModel):
                 if forecaster.predictions is not None:
@@ -632,11 +642,17 @@ class BaseStockKeep:
         """
         try:
             if isinstance(forecaster, UnivariateSSM):
-                obs = forecaster.forecast_idata["forecast_observed"].isel(observed_state=0)
-                scale = getattr(forecaster, "max_scaler", 1.0) or 1.0
-                stacked = obs.stack(sample=["chain", "draw"])
-                # dims after stack: (time, sample) → transpose to (n_periods, n_draws)
-                return stacked.values.T * scale
+                obs = forecaster.forecast_idata["forecast_observed"]
+                if obs.sizes.get("observed_state", 1) > 1:
+                    return None  # panel model; see _extract_daily_forecast_mean
+                obs = obs.isel(observed_state=0)
+                # Invert per sample, before any aggregation.
+                daily = forecaster.inverse_transform(
+                    obs.stack(sample=["chain", "draw"])
+                )
+                # stack appends `sample` last, so dims are already
+                # (time, sample) == (n_periods, n_draws).
+                return daily.values
 
             if isinstance(forecaster, MediaMixModel):
                 if forecaster.predictions is not None:
@@ -650,9 +666,10 @@ class BaseStockKeep:
             ):
                 scale = getattr(forecaster, "max_scaler", 1.0) or 1.0
                 samples = forecaster.forecast_idata.predictions["y"]
-                # dims: (chain, draw, time) → stack → (time, sample) → transpose
+                # dims: (chain, draw, time) → stack → (time, sample), which is
+                # already (n_periods, n_draws).
                 stacked = samples.stack(sample=["chain", "draw"])
-                return stacked.values.T * scale
+                return stacked.values * scale
         except Exception:
             pass
         return None
