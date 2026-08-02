@@ -6,3 +6,6 @@
 
 # Bakery demo data: no open license, downloaded locally via notebooks/11_Bakery_Dataset.ipynb
 /data/bakery/
+
+# Live model config: API keys. Never commit.
+.env
