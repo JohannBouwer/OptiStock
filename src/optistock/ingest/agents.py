@@ -136,20 +136,8 @@ def build_describer(model=None, output_mode=None) -> "Agent[None, SourceDescript
 def describe_source(
     profile: TableProfile, model=None, output_mode=None
 ) -> SourceDescription:
-    """Agent 1: read the profile, return a short account of the table.
-
-    Synchronous — for scripts and the CLI. Inside Jupyter an event loop is already
-    running and ``run_sync`` raises; use :func:`describe_source_async` there.
-    """
+    """Agent 1: read the profile, return a short account of the table."""
     return build_describer(model, output_mode).run_sync(profile.render()).output
-
-
-async def describe_source_async(
-    profile: TableProfile, model=None, output_mode=None
-) -> SourceDescription:
-    """Async variant of :func:`describe_source`."""
-    result = await build_describer(model, output_mode).run(profile.render())
-    return result.output
 
 
 # ---------------------------------------------------------------------------
@@ -505,21 +493,6 @@ def map_columns(
     return agent.run_sync(_map_prompt(profile, description, previous, issues)).output
 
 
-async def map_columns_async(
-    profile: TableProfile,
-    model=None,
-    output_mode=None,
-    *,
-    description: SourceDescription | None = None,
-    previous: ColumnMapping | None = None,
-    issues: list[str] | None = None,
-) -> ColumnMapping:
-    """Async variant, for Jupyter where ``run_sync`` raises on the running loop."""
-    agent = build_mapper(model, output_mode)
-    result = await agent.run(_map_prompt(profile, description, previous, issues))
-    return result.output
-
-
 # ---------------------------------------------------------------------------
 # Agent 3 — review
 # ---------------------------------------------------------------------------
@@ -664,20 +637,6 @@ def review_result(
     """
     agent = build_reviewer(model, output_mode)
     return agent.run_sync(_review_prompt_for(source, mapping, result)).output
-
-
-async def review_result_async(
-    source: TableProfile,
-    mapping: ColumnMapping,
-    result,
-    *,
-    model=None,
-    output_mode=None,
-) -> Review:
-    """Async variant of :func:`review_result`."""
-    agent = build_reviewer(model, output_mode)
-    out = await agent.run(_review_prompt_for(source, mapping, result))
-    return out.output
 
 
 def _review_prompt_for(source: TableProfile, mapping: ColumnMapping, result) -> str:

@@ -27,17 +27,14 @@ from .agents import (
     Review,
     SourceDescription,
     describe_source,
-    describe_source_async,
     map_columns,
-    map_columns_async,
     render_mapping,
     review_result,
-    review_result_async,
 )
 from .apply import ValidationResult, to_canonical
 from .profile import profile_dataframe, render_facts
 
-__all__ = ["IngestResult", "Round", "ingest", "ingest_async"]
+__all__ = ["IngestResult", "Round", "ingest"]
 
 
 @dataclass
@@ -152,11 +149,6 @@ def ingest(
         With every round on ``rounds``, the best round's mapping and result, and
         ``transforms`` naming which of to_sales/to_items/to_clv/to_returns the frame
         can feed.
-
-    Notes
-    -----
-    Synchronous, so it cannot run inside an event loop that is already going — which
-    is every Jupyter cell. Use :func:`ingest_async` with ``await`` there.
     """
     return _drive(
         df,
@@ -167,48 +159,13 @@ def ingest(
     )
 
 
-async def ingest_async(
-    df: pd.DataFrame,
-    *,
-    max_rounds: int = 2,
-    model=None,
-    describe_model=None,
-    review_model=None,
-    output_mode=None,
-    drop_invalid: bool = True,
-    describe: bool = True,
-) -> IngestResult:
-    """Async variant of :func:`ingest` — the one to use in Jupyter::
-
-        out = await ingest_async(raw)
-
-    ``ingest`` calls PydanticAI's ``run_sync``, which raises
-    ``RuntimeError: This event loop is already running`` in a notebook. Identical
-    behaviour otherwise: the loop, the round cap and the choice of round are shared
-    with the sync entry point, so the two cannot drift.
-    """
-    calls = _AsyncCalls(model, describe_model, review_model, output_mode)
-    return await _adrive(
-        df, calls, max_rounds=max_rounds, drop_invalid=drop_invalid, describe=describe
-    )
-
-
 # ---------------------------------------------------------------------------
-# The loop, written once
+# The loop
 # ---------------------------------------------------------------------------
 #
-# The sync and async entry points differ only in how the three agent calls are awaited,
-# so each supplies a small object with `describe`/`map`/`review` and the loop is written
-# against that.
-#
-# `_drive` and `_adrive` are then deliberate near-duplicates: `_adrive` is `_drive` with
-# `async`/`await` added and nothing else. Python offers no clean way to write one body
-# that works both ways, and the alternatives (running the sync path in a thread, or
-# `asyncio.run` from the async one) either block a notebook's loop or nest loops. The
-# duplication is the least bad option, and the risk it carries — the termination logic
-# drifting between the two — is guarded by
-# tests/ingest/test_agents.py::test_the_sync_and_async_drivers_have_identical_logic,
-# which normalises the awaits away and compares the bodies. Change one, change both.
+# The three agent calls are reached through a small object with `describe`/`map`/`review`
+# rather than called directly, so a caller can substitute scripted agents in a test
+# without patching module globals.
 
 
 @dataclass
@@ -229,29 +186,6 @@ class _SyncCalls:
 
     def review(self, source, mapping, result):
         return review_result(
-            source, mapping, result,
-            model=self.review_model, output_mode=self.output_mode,
-        )
-
-
-@dataclass
-class _AsyncCalls:
-    model: object = None
-    describe_model: object = None
-    review_model: object = None
-    output_mode: object = None
-
-    async def describe(self, source):
-        return await describe_source_async(source, self.describe_model, self.output_mode)
-
-    async def map(self, source, description, previous, issues):
-        return await map_columns_async(
-            source, self.model, self.output_mode,
-            description=description, previous=previous, issues=issues,
-        )
-
-    async def review(self, source, mapping, result):
-        return await review_result_async(
             source, mapping, result,
             model=self.review_model, output_mode=self.output_mode,
         )
@@ -301,51 +235,6 @@ def _drive(df, calls, *, max_rounds, drop_invalid, describe) -> IngestResult:
         try:
             review = calls.review(source, mapping, result)
         except Exception as exc:  # noqa: BLE001 - no reviewer, but the mapping stands
-            rounds.append(
-                Round(mapping, result, error=f"review: {type(exc).__name__}: {exc}")
-            )
-            if _better(result, best.result if best else None):
-                best = rounds[-1]
-            break
-
-        rounds.append(Round(mapping, result, review))
-        if _better(result, best.result if best else None):
-            best = rounds[-1]
-
-        if review.verdict == "approve" or not review.issues:
-            break
-        previous, issues = mapping, list(review.issues)
-
-    return _finish(description, rounds, best)
-
-
-async def _adrive(df, calls, *, max_rounds, drop_invalid, describe) -> IngestResult:
-    """Mirror of :func:`_drive` with the three agent calls awaited."""
-    source = profile_dataframe(df)
-    description = await calls.describe(source) if describe else None
-
-    rounds: list[Round] = []
-    best: Round | None = None
-    previous: ColumnMapping | None = None
-    issues: list[str] | None = None
-
-    for _ in range(max(max_rounds, 1)):
-        try:
-            mapping = await calls.map(source, description, previous, issues)
-        except Exception as exc:  # noqa: BLE001
-            rounds.append(Round(None, None, error=f"{type(exc).__name__}: {exc}"))
-            break
-
-        try:
-            result = to_canonical(df, mapping, drop_invalid=drop_invalid)
-        except Exception as exc:  # noqa: BLE001
-            rounds.append(Round(mapping, None, error=f"{type(exc).__name__}: {exc}"))
-            previous, issues = mapping, _apply_crash_feedback(exc)
-            continue
-
-        try:
-            review = await calls.review(source, mapping, result)
-        except Exception as exc:  # noqa: BLE001
             rounds.append(
                 Round(mapping, result, error=f"review: {type(exc).__name__}: {exc}")
             )

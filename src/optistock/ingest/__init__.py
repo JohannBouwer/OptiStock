@@ -60,13 +60,9 @@ __all__ = [
     "build_mapper",
     "build_reviewer",
     "describe_source",
-    "describe_source_async",
     "ingest",
-    "ingest_async",
     "map_columns",
-    "map_columns_async",
     "review_result",
-    "review_result_async",
 ]
 
 _LAZY = {
@@ -75,14 +71,10 @@ _LAZY = {
     "build_mapper": "agents",
     "build_reviewer": "agents",
     "describe_source": "agents",
-    "describe_source_async": "agents",
     "map_columns": "agents",
-    "map_columns_async": "agents",
     "review_result": "agents",
-    "review_result_async": "agents",
     "IngestResult": "run",
     "ingest": "run",
-    "ingest_async": "run",
 }
 
 

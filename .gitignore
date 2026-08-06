@@ -4,7 +4,8 @@
 .ipynb_checkpoints
 /.vscode
 
-# Bakery demo data: no open license, downloaded locally via notebooks/11_Bakery_Dataset.ipynb
+# Bakery demo data: no open license. Downloaded locally by notebooks/11_Bakery_Dataset.ipynb
+# and by scripts/prepare_bakery.py, which also writes the derived frames notebook 11b reads.
 /data/bakery/
 
 # Live model config: API keys. Never commit.
