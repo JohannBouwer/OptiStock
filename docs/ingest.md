@@ -73,7 +73,7 @@ Small models reliably pick the right *source* but often mislabel the *strategy* 
 
 ## Configuration
 
-Any OpenAI-compatible `/v1` endpoint works: a local server (Ollama, LM Studio, vLLM) or a hosted one. Only environment variables change — put them in a `.env`.
+Any OpenAI-compatible `/v1` endpoint works: a local server (Ollama, LM Studio, vLLM) or a hosted one. Only environment variables change — copy [`.env.example`](../.env.example) to `.env` and edit it.
 
 ```bash
 INGEST_BASE_URL=openrouter        # or ollama | lmstudio | google | any URL
