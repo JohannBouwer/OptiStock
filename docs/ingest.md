@@ -109,6 +109,8 @@ optistock-ingest --check
 > [!WARNING]
 > **A mapping can be well-formed and still wrong.** The schema checks shape and dtype, not meaning. Nothing stops a line total being mapped into `unit_price`, and the result validates cleanly. Read `out.result.facts` — orders per customer, date span, lines per order — which is usually the fastest way to spot it.
 
+[Notebook 11c](../notebooks/11c_Ingest_Across_Datasets.ipynb) is the worked example: four real sources side by side, including one that validates cleanly on a date column that turns out to be a shipping deadline, and one the mapper correctly refuses to map at all.
+
 ## Returns
 
 `to_canonical` drops the rows the schema rejects, which on most real exports means the returns: negative quantities are near-universal and would otherwise block the demand panel outright. They are not lost:
