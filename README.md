@@ -26,6 +26,12 @@ The core install ships with [nutpie](https://github.com/pymc-devs/nutpie) as the
 pip install "optistock[jax] @ git+https://github.com/JohannBouwer/OptiStock.git"
 ```
 
+To map a messy source export onto the canonical order-line schema with a language model, install the `ingest` extra. `import optistock` never touches it, so the core install stays free of an LLM SDK:
+
+```bash
+pip install "optistock[ingest] @ git+https://github.com/JohannBouwer/OptiStock.git"
+```
+
 Notebook tooling (`jupyter`, `ipywidgets`) and the demo dashboard (`streamlit`) are **not** part of the library install — they live in the `dev` dependency group and are only installed in the development setup below.
 
 ### For Development (Editable Mode)
@@ -94,6 +100,8 @@ Swap `forecaster_class` for any other forecaster, switch `PeriodicOrderUpTo` for
 
 | Capability | Class(es) | Docs | Notebook |
 |---|---|---|---|
+| Order lines → model-ready frames (sales panel, item economics, RFM, returns) | `to_sales`, `to_items`, `to_clv`, `to_returns`, `validate` | [preprocessing](docs/preprocessing.md) | [preprocessing](notebooks/data_preprocessing.ipynb) |
+| Agent-assisted mapping of a messy export onto the canonical schema | `ingest`, `to_canonical` | [ingest](docs/ingest.md) | [preprocessing](notebooks/data_preprocessing.ipynb) |
 | Bayesian demand forecasting (Fourier, BART, HSGP) | `BayesTimeSeries`, `BARTBayesTimeSeries`, `HSGPBayesTimeSeries` | [forecasting](docs/forecasting.md) | [4](notebooks/4_Forecasting_Example.ipynb) |
 | Hierarchical panel forecasting with partial pooling | `HierarchicalBayesTimeSeries`, `HierarchicalSSM` | [forecasting](docs/forecasting.md#hierarchicalbayestimeseries--panel-forecasting) | [9](notebooks/9_Hierarchical_Forecasting.ipynb), [12](notebooks/12_Hierarchical_StateSpace.ipynb) |
 | Bayesian Structural Time Series | `UnivariateSSM`, `HierarchicalSSM` | [forecasting](docs/forecasting.md#univariatessm--bayesian-structural-state-space) | [4](notebooks/4_Forecasting_Example.ipynb), [5](notebooks/5_Stockouts.ipynb), [12](notebooks/12_Hierarchical_StateSpace.ipynb) |
@@ -108,6 +116,8 @@ Swap `forecaster_class` for any other forecaster, switch `PeriodicOrderUpTo` for
 
 ## Project structure
 
+- [`optistock/preprocessing/`](src/optistock/preprocessing/) — the canonical order-line schema and the deterministic transforms into every other module's input frame.
+- [`optistock/ingest/`](src/optistock/ingest/) — LLM-assisted mapping of a messy source table onto that schema (optional extra).
 - [`optistock/forecasting/`](src/optistock/forecasting/) — Bayesian forecasters and their `*Priors` dataclasses.
 - [`optistock/causal/`](src/optistock/causal/) — `SyntheticControl` and the `LiftConstraint` bridge into the forecasters.
 - [`optistock/clv/`](src/optistock/clv/) — customer lifetime value: `ParetoNBD` (frequency) and `GammaGammaSpend` (monetary value).

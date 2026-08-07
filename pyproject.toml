@@ -13,7 +13,15 @@ dependencies = [
   "numba>=0.63.1",       # nutpie compiles model logp via numba
   "numpy>=2.3.5",
   "nutpie>=0.10",        # default NUTS sampler backend
-  "pandas>=2.0",
+  # pandas is capped below 3 for the same reason pymc is capped below 6: the
+  # stack pinned here is untested against that major release. Lift both caps
+  # together, deliberately. The 2.1.1 floor comes from pandera[pandas].
+  "pandas>=2.1.1,<3",
+  # pandera is the *only* validation gate for optistock.preprocessing, which is
+  # core — so it is a core dependency, not part of the [ingest] extra. It brings
+  # three small pure-Python wheels (typeguard, typing_inspect, mypy_extensions);
+  # packaging, pydantic and typing_extensions are already in the tree.
+  "pandera[pandas]>=0.32.1",
   # pymc-marketing >=0.19.4 is required for CLV `fit(method="map")`: earlier
   # releases call NDArray.record() without the `in_warmup` argument that
   # pymc >=5.28 requires. It in turn needs pymc >=5.28.1 and pymc-extras >=0.9.2.
@@ -29,6 +37,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# LLM-assisted ingest: maps a messy source table onto the canonical order-line
+# schema. `import optistock` never reaches optistock.ingest, and the
+# deterministic half of that package (profile → apply_mapping → to_canonical)
+# runs without any of these — only the mapping *agent* needs them.
+ingest = [
+  "openpyxl>=3.1.5",                  # read_table() for .xlsx / .xls sources
+  "pydantic-ai-slim[openai]>=2.17.0",
+  "python-dotenv>=1.2.2",
+]
+
 # Alternative JAX-based sampler backend: pass sampler="numpyro" /
 # nuts_sampler="numpyro" to any fit method.
 jax = [
@@ -53,6 +71,41 @@ dev = [
 
 [tool.uv]
 package = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+  "slow: fits a real PyMC model (deselect with -m 'not slow')",
+]
+filterwarnings = [
+  "error",
+  # pandera concatenates failure-case frames that can legitimately be all-NA,
+  # which pandas 2.x deprecates. It fires on every *expected* validation failure
+  # — i.e. on most of test_order_schema.py — and is fixed in pandas 3.
+  # Raised from pandera/backends/pandas/error_formatters.py.
+  "default:The behavior of DataFrame concatenation with empty or all-NA entries:FutureWarning:pandera",
+  # pymc-marketing deprecated constructing a CLV model with `Model(data)` in favour
+  # of `Model.build_model(data)` / `Model.fit(data)`, removal in 1.0. optistock.clv
+  # still uses the old form — see BaseCLV._build. Lift this exemption when that is
+  # migrated; until then it fires on every CLV model construction.
+  "default:'Pareto/NBD\\(data\\)' is deprecated:DeprecationWarning",
+  "default:'Gamma-Gamma:DeprecationWarning",
+  # PydanticAI's `run_sync` reaches for the running loop through
+  # asyncio.get_event_loop(), which Python 3.12 deprecates when none is set. It fires
+  # once per agent constructed in a test and comes from inside the SDK, so there is
+  # nothing to fix on our side. Raised from pydantic_graph/_utils.py.
+  "default:There is no current event loop:DeprecationWarning",
+  # Same origin: cancelling the helper coroutine `run_sync` created leaves these two
+  # behind on some interpreter shutdown paths.
+  "default:coroutine .* was never awaited:RuntimeWarning",
+  "default:Exception ignored in:pytest.PytestUnraisableExceptionWarning",
+]
+
+[project.scripts]
+# Requires the [ingest] extra.
+optistock-ingest = "optistock.ingest.cli:main"
 
 [project.urls]
 "Homepage" = "https://github.com/JohannBouwer/OptiStock"

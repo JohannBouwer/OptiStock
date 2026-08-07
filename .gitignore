@@ -4,5 +4,16 @@
 .ipynb_checkpoints
 /.vscode
 
-# Bakery demo data: no open license, downloaded locally via notebooks/11_Bakery_Dataset.ipynb
+# Demo data and the ingest artifacts derived from it, all written by scripts/prepare_*.py
+# and read by notebooks 11b and 11c. Downloaded locally, never committed.
+# Bakery: no open license. Also downloaded by notebooks/11_Bakery_Dataset.ipynb.
 /data/bakery/
+# Online Retail II: CC BY 4.0, so committable in principle — but it is 1.07M rows.
+/data/online_retail/
+# Olist: CC BY-NC-SA 4.0, non-commercial share-alike.
+/data/olist/
+# dunnhumby "The Complete Journey": distributed under dunnhumby's own terms.
+/data/dunnhumby/
+
+# Live model config: API keys. Never commit.
+.env
